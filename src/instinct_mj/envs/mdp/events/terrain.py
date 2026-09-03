@@ -18,6 +18,11 @@ def register_virtual_obstacle_to_sensor(
     `terrain.virtual_obstacles` dict.
 
     """
+    print(
+        "[WARNING] `register_virtual_obstacle_to_sensor` is deprecated; "
+        "virtual obstacles are now registered automatically via sensor.edit_spec."
+    )
+
     if isinstance(sensor_cfgs, SceneEntityCfg):
         sensor_cfgs = [sensor_cfgs]
 

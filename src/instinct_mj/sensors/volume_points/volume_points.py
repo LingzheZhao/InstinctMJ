@@ -95,7 +95,11 @@ class VolumePoints(Sensor[VolumePointsData]):
     """
 
     def edit_spec(self, scene_spec: mujoco.MjSpec, entities: dict[str, Entity]) -> None:
-        del scene_spec, entities
+        terrain_entity = entities.get("terrain", None)
+        if terrain_entity is None:
+            print("[WARNING] No 'terrain' entity found. Please assign 'terrain' entity in the scene cfg.")
+        elif hasattr(terrain_entity, "virtual_obstacles"):
+            self.register_virtual_obstacles(terrain_entity.virtual_obstacles)
 
     def initialize(
         self,
