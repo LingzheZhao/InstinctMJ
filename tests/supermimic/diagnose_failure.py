@@ -45,7 +45,7 @@ KNEEL = [i for i, n in enumerate(names) if "kneelClimbStep1" in n]
 layout = [KNEEL[0]] * 4 + [KNEEL[1]] * 4 + [3, 7, 4, 8] + [0, 1, 5, 9]
 ev.motion_of_env = torch.tensor(layout, device=dev)
 env, vec, mgr, robot = ev.env, ev.vec, ev.mgr, ev.robot
-ev.runner.load(args.checkpoint)  # stock load
+ev.runner.load(args.checkpoint)
 policy = ev.runner.get_inference_policy(device=dev)
 robot.data.default_joint_pos_nominal = robot.data.default_joint_pos[0].clone()  # Play removes the default-pos DR event that sets it
 sidecar = torch.load(os.path.join(os.path.dirname(args.checkpoint), "supermimic_state_" + os.path.basename(args.checkpoint)[len("model_"):]), map_location=dev, weights_only=False)

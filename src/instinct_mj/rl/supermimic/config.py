@@ -8,11 +8,10 @@ from typing import Any
 
 @dataclass(kw_only=True)
 class SuperMimicRunnerCfg:
-    """Hyperparameters of :class:`SuperMimicRunner` (the runner receives ``to_dict()``)."""
+    """Hyperparameters of :class:`SuperMimicRunner`, mixed into the task's agent cfg (the runner receives its flat ``to_dict()``).
+    ``seed``, ``max_iterations``, ``save_interval`` and ``log_interval`` are the ones of ``InstinctRlOnPolicyRunnerCfg``."""
 
     # ---- simulation / collection (Algorithm A.1: collect -> k-step world-model fit -> H-step BPTT policy + GAE critic) ----
-    seed: int = 42
-    """Random seed of the runner (default 42)."""
     buffer_steps: int = 1000
     """Replay buffer length in vectorized env steps, (T, N) layout (default 1000)."""
     utd: float = 0.4
@@ -67,6 +66,8 @@ class SuperMimicRunnerCfg:
     """Upper clip of ``p_fail`` in imagination (default 0.95)."""
     fail_pos_weight: float = 1.0
     """BCE positive weight; 1 because the failure oversampling is importance-weighted to keep the head calibrated (default 1.0)."""
+    resume_init_new_heads: bool = False
+    """Allow resuming from a sidecar written before the failure head existed: the head is created fresh (default False)."""
 
     # ---- policy / critic ----
     horizon: int = 32
@@ -87,8 +88,6 @@ class SuperMimicRunnerCfg:
     """Ablation: no critic, i.e. no bootstrap value term in the return and no critic fit (default False)."""
 
     # ---- schedule ----
-    max_iterations: int = 320_000
-    """Total training iterations (default 320000)."""
     lr: float = 2e-4
     """Initial learning rate (default 2e-4)."""
     lr_decay_iters: int = 250_000
@@ -112,12 +111,6 @@ class SuperMimicRunnerCfg:
     """Resolution [m] of the global terrain heightmap used by the analytic height scan (default 0.05)."""
     heightmap_cache_dir: str = "~/.cache/instinct_mj/supermimic_heightmaps"
     """Directory caching the terrain heightmaps (default "~/.cache/instinct_mj/supermimic_heightmaps")."""
-
-    # ---- logging ----
-    save_interval: int = 2000
-    """Iterations between checkpoints (default 2000)."""
-    log_interval: int = 50
-    """Iterations between console / TensorBoard logs (default 50)."""
 
     def to_dict(self) -> dict[str, Any]:
         """Plain dict of all fields (what the runner receives)."""

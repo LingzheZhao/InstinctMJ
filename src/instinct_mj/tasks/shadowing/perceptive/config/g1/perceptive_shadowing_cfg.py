@@ -25,6 +25,13 @@ from instinct_mj.motion_reference.motion_files.amass_motion_cfg import AmassMoti
 from instinct_mj.motion_reference.motion_files.terrain_motion_cfg import TerrainMotionCfg as TerrainMotionCfgBase
 from instinct_mj.motion_reference.motion_reference_cfg import MotionReferenceManagerCfg
 from instinct_mj.motion_reference.utils import motion_interpolate_bilinear
+from instinct_mj.utils.noise import (
+    DepthArtifactNoiseCfg,
+    DepthContourNoiseCfg,
+    GaussianBlurNoiseCfg,
+    RangeBasedGaussianNoiseCfg,
+    StereoTooCloseNoiseCfg,
+)
 
 G1_CFG = G1_29DOF_TORSOBASE_POPSICLE_CFG
 
@@ -231,6 +238,21 @@ motion_reference_cfg_play.debug_vis = True
 motion_reference_cfg_play.reference_entity_name = "robot_reference"
 
 
+def _enable_depth_noise(camera_cfg) -> None:
+    """Turn on the camera noise models that are commented out in ``make_perceptive_scene_sensors`` (same params), in front
+    of ``normalize`` / ``crop_and_resize``. Left out: ``reflection_artifact_noise`` / ``sky_artifact_noise`` (the camera
+    range is clipped to 2 m, so sky artifacts never show up and reflections are covered by the generic artifacts)."""
+    tail = {k: camera_cfg.noise_pipeline[k] for k in ("normalize", "crop_and_resize")}
+    camera_cfg.noise_pipeline = {
+        "depth_contour_noise": DepthContourNoiseCfg(contour_threshold=1.8, maxpool_kernel_size=1),
+        "depth_artifact_noise": DepthArtifactNoiseCfg(),
+        "stereo_noise": RangeBasedGaussianNoiseCfg(max_value=1.2, min_value=0.12, noise_std=0.02),
+        "gaussian_blur_noise": GaussianBlurNoiseCfg(kernel_size=3, sigma=0.5),
+        "stereo_too_close_noise": StereoTooCloseNoiseCfg(),
+        **tail,
+    }
+
+
 @dataclass(kw_only=True)
 class G1PerceptiveShadowingEnvCfg(perceptual_cfg.PerceptiveShadowingEnvCfg):
     scene: perceptual_cfg.PerceptiveShadowingSceneCfg = field(
@@ -251,6 +273,9 @@ class G1PerceptiveShadowingEnvCfg(perceptual_cfg.PerceptiveShadowingEnvCfg):
             sensor_cfg for sensor_cfg in self.scene.sensors if sensor_cfg.name == "motion_reference"
         )
         camera_cfg = next(sensor_cfg for sensor_cfg in self.scene.sensors if sensor_cfg.name == "camera")
+
+        # SuperMimic trains the policy (and Play runs it) with the camera noise models on.
+        _enable_depth_noise(camera_cfg)
 
         robot_cfg.articulation.actuators = beyondmimic_g1_29dof_actuator_cfgs
         # self.scene.robot.spawn.rigid_props.max_depenetration_velocity = 0.3

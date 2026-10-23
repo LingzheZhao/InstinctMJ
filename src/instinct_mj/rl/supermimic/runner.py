@@ -6,9 +6,13 @@ The simulator is the unchanged mjlab perceptive shadowing env (including the dep
 ``InstinctRlVecEnvWrapper`` (DR, resets, the task's BeyondMimic adaptive bin sampling, terminations and timeouts stay the
 task's; the reference's return-based reset-bin sampler is therefore NOT used). Rewards / terminations in imagination are
 the analytic heads of ``mdp.py``. The policy IS the task's own actor (``EncoderActorCritic`` with the Conv2d depth
-encoder, built by a stock ``instinct_rl`` ``OnPolicyRunner``) and acts on the task's ``policy`` observation group; in
+encoder, built by ``instinct_rl.modules.build_actor_critic`` from the task's policy cfg) and acts on the task's ``policy`` observation group; in
 imagination that observation is assembled analytically (``MDP.policy_obs``) with the depth image rendered by the
 world model's ``DepthEnsemble``.
+
+The runner replaces ``OnPolicyRunner`` as the task's ``runner_entry_point`` (``instinct-train`` / ``instinct-play`` use
+``__init__``, ``learn``, ``save`` / ``load``, ``get_inference_policy``, ``export_as_onnx``, ``add_git_repo_to_log``); there
+is no PPO anywhere.
 """
 
 from __future__ import annotations
@@ -18,11 +22,14 @@ import math
 import os
 import time
 
+import instinct_rl
+import instinct_rl.modules as modules
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint
-from instinct_rl.runners import OnPolicyRunner
+from instinct_rl.utils.utils import get_subobs_size, store_code_state
 from tensorboardX import SummaryWriter
 
 from . import networks
@@ -40,34 +47,67 @@ DEPTH_GAP_STEPS = (1, 8, 16, 32)
 
 
 class SuperMimicRunner:
-    def __init__(self, env, train_cfg: dict, log_dir: str | None = None, device: str = "cuda:0"):
-        """``train_cfg`` = ``SuperMimicRunnerCfg.to_dict()`` plus the key ``"stock"``: the task's own
-        ``InstinctRlOnPolicyRunnerCfg.to_dict()`` (policy architecture + policy normalizer)."""
-        self.cfg, self.env, self.log_dir, self.device = train_cfg, env, log_dir, device
-        c = train_cfg
-        self.unwrapped = env.unwrapped
-        torch.manual_seed(c["seed"])
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cudnn.allow_tf32 = True
-        networks.AMP_DTYPE = torch.bfloat16 if c["amp"] == "bf16" else None
+    """Trainer / play-time policy holder of the task (registered as the task's ``runner_entry_point``).
 
-        # ---- the task's policy: stock runner builds EncoderActorCritic + optimizer + policy normalizer ----
-        self.stock = OnPolicyRunner(env, copy.deepcopy(c["stock"]), log_dir=log_dir, device=device)
-        self.ac = self.stock.alg.actor_critic
-        self.opt_pi = self.stock.alg.optimizer
-        self.pol_norm = self.stock.normalizers["policy"]
-        self.pol_norm.eval()  # statistics are updated explicitly from collected real observations
-        for g in self.opt_pi.param_groups:
-            g["lr"], g["betas"], g["weight_decay"] = c["lr"], (0.9, 0.95), 0.0
+    Construction is light and is all that ``instinct-play`` needs: the task's policy (``EncoderActorCritic`` built by
+    ``instinct_rl.modules.build_actor_critic``), its optimizer and the observation normalizers, plus ``load`` /
+    ``get_inference_policy`` / ``export_as_onnx``. The training-only components (analytic MDP heads, heightmap, world model,
+    depth / failure heads, critic, replay buffer, ``torch.compile``) are built by :meth:`setup_training`, which ``learn``
+    calls first; the sidecar of a resumed run is read there as well."""
+
+    def __init__(self, env, train_cfg: dict, log_dir: str | None = None, device: str = "cuda:0"):
+        """``train_cfg`` = the task agent cfg ``to_dict()``: ``policy`` / ``normalizers`` (as for ``OnPolicyRunner``) plus the
+        flat ``SuperMimicRunnerCfg`` hyperparameters."""
+        self.cfg, self.env, self.log_dir, self.device = copy.deepcopy(train_cfg), env, log_dir, device
+        c = self.cfg
+        self.unwrapped = env.unwrapped
+        policy_cfg = c["policy"]
+        obs_format = env.get_obs_format()
+
+        # ---- the task's policy, optimizer and observation normalizers (same construction as ``OnPolicyRunner``) ----
+        self.ac = modules.build_actor_critic(
+            policy_cfg.pop("class_name"), policy_cfg, obs_format, num_actions=env.num_actions, num_rewards=env.num_rewards
+        ).to(device)
+        self.opt_pi = torch.optim.AdamW(self.ac.parameters(), lr=c["lr"], betas=(0.9, 0.95), weight_decay=0.0)
+        self.normalizers = {}
+        for obs_group_name, config in c["normalizers"].items():
+            config = config.copy()
+            normalizer = modules.build_normalizer(
+                input_shape=get_subobs_size(obs_format[obs_group_name]),
+                normalizer_class_name=config.pop("class_name"),
+                normalizer_kwargs=config,
+            )
+            normalizer.to(device)
+            self.normalizers[obs_group_name] = normalizer
+        self.pol_norm = self.normalizers["policy"]
         offset = 0
-        for name, shape in env.get_obs_format()["policy"].items():
+        for name, shape in obs_format["policy"].items():
             if name == "depth_image":
                 break
             offset += math.prod(shape)
         self.depth_slice = slice(offset, offset + DEPTH_DIM)
-        assert math.prod(env.get_obs_format()["policy"]["depth_image"]) == DEPTH_DIM
+        assert math.prod(obs_format["policy"]["depth_image"]) == DEPTH_DIM
 
         self.N = env.num_envs
+        self.it = 0
+        self.git_status_repos = [instinct_rl.__file__]  # files whose repo status is stored with the run
+        self.resume_path: str | None = None  # set by ``load``: the sidecar is read by ``setup_training``
+        self.training_ready = False
+        self.writer = None
+        _, _ = env.reset()
+
+    def setup_training(self) -> None:
+        """Build everything that only training needs (called by ``learn``). The simulator runs with ``auto_reset=False``
+        from here on: finished envs are reset explicitly after their pre-reset data was read (see ``collect``)."""
+        if dist.is_initialized():
+            raise NotImplementedError("SuperMimicRunner trains in a single process (no distributed data parallel).")
+        c, env, device = self.cfg, self.env, self.device
+        self.unwrapped.cfg.auto_reset = False
+        torch.manual_seed(c["seed"])
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        networks.AMP_DTYPE = torch.bfloat16 if c["amp"] == "bf16" else None
+        self.pol_norm.eval()  # statistics are updated explicitly from collected real observations
         self.motion, self.kin, self.scanner, self.mdp = build_mdp(
             self.unwrapped, c["heightmap_resolution"], c["heightmap_cache_dir"], device
         )
@@ -96,9 +136,12 @@ class SuperMimicRunner:
         self.err_floor = ERR_FLOOR.to(device)
         self.buffer = ReplayBuffer(c["buffer_steps"], self.N, self.K, device, c["wm_holdout_envs"])
         self.obs, _ = env.get_observations()  # real flat policy observation (post-reset)
-        self.it, self.sim_steps, self.wall_offset = 0, 0, 0.0
-        self.writer = SummaryWriter(log_dir=log_dir) if log_dir is not None else None
+        self.sim_steps, self.wall_offset = 0, 0.0
+        self.writer = SummaryWriter(log_dir=self.log_dir) if self.log_dir is not None else None
         self._build_fns()
+        if self.resume_path is not None:
+            self._load_sidecar(self.resume_path)
+        self.training_ready = True
 
     # ------------------------------------------------------------------------------------------------
     def _build_fns(self):
@@ -496,6 +539,10 @@ class SuperMimicRunner:
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False):
         """Train until iteration ``num_learning_iterations`` (total, so a resumed run continues). The env's random
         initial episode lengths are not used: resets come from the task's reference sampling."""
+        if not self.training_ready:
+            self.setup_training()
+        if self.log_dir is not None:
+            store_code_state(self.log_dir, self.git_status_repos)
         c = self.cfg
         stats = {"r": [], "r_gap": [], "ep_len": [], "term": [], "done": []}
         self.collect(c["warmup_steps"], stats)  # also refills the (unsaved) replay buffer after a resume
@@ -586,44 +633,91 @@ class SuperMimicRunner:
         d, name = os.path.split(path)
         return os.path.join(d, "supermimic_state_" + name[len("model_"):])
 
-    # keys of the sidecar that belong to modules added after the first release (see ``load``)
+    # keys of the sidecar that belong to modules added after the first release (see ``_load_sidecar``)
     NEW_HEAD_KEYS = ("fail_head", "opt_fail", "fail_head_start_it")
 
-    def save(self, path: str) -> None:
-        """``path``: stock ``OnPolicyRunner`` checkpoint (actor-critic, policy optimizer, policy normalizer): directly
-        playable. Sidecar: world model, depth head, failure head, critic, their optimizers and the training state (resume)."""
-        self.stock.current_learning_iteration = self.it
-        self.stock.save(path)
+    def add_git_repo_to_log(self, repo_path: str) -> None:
+        """Also store the git status / diff of the repo containing ``repo_path`` with the run (``learn`` writes them)."""
+        self.git_status_repos.append(repo_path)
+
+    def save(self, path: str, infos=None) -> None:
+        """``path``: ``OnPolicyRunner`` checkpoint format (``model_state_dict``, ``optimizer_state_dict``, the
+        ``<group>_normalizer_state_dict`` of every normalizer, ``iter``, ``infos``): directly playable. Sidecar: world model,
+        depth head, failure head, critic, their optimizers and the training state (resume)."""
+        run_state_dict = {"model_state_dict": self.ac.state_dict(), "optimizer_state_dict": self.opt_pi.state_dict()}
+        run_state_dict.update({f"{group}_normalizer_state_dict": n.state_dict() for group, n in self.normalizers.items()})
+        run_state_dict.update({"iter": self.it, "infos": infos})
+        torch.save(run_state_dict, path)
         torch.save({
             "wm": self.wm.state_dict(), "depth_head": self.depth_head.state_dict(), "critic": self.critic.state_dict(),
             "opt_wm": self.opt_wm.state_dict(), "opt_v": self.opt_v.state_dict(), "iteration": self.it,
-            "wall_time": self.wall_offset, "sim_steps": self.sim_steps, "cfg": {k: v for k, v in self.cfg.items() if k != "stock"},
+            "wall_time": self.wall_offset, "sim_steps": self.sim_steps, "cfg": self.cfg,
             "xi_mean": self.mdp.xi_mean, "xi_scale": self.mdp.xi_scale,
             "fail_head": self.fail_head.state_dict(), "opt_fail": self.opt_fail.state_dict(), "fail_head_start_it": self.fail_head_start_it,
         }, self._sidecar(path))  # fmt: skip
 
-    def load(self, path: str, init_new_heads: bool = False) -> None:
-        """Resume from a stock checkpoint + its sidecar. Existing modules must load strictly (missing keys error). A sidecar
-        written before the failure head existed has exactly ``NEW_HEAD_KEYS`` missing: that is only accepted with
-        ``init_new_heads=True`` (``--resume-init-new-heads``), in which case the head is initialized fresh (and warmed up for
-        ``fail_head_warmup_iters`` iterations from the loaded iteration before it affects the policy)."""
-        self.stock.load(path)
+    def load(self, path: str):
+        """Load the policy (actor-critic, its optimizer, the normalizers, the iteration) from an ``OnPolicyRunner``-format
+        checkpoint: all that play needs. The sidecar of a SuperMimic run is NOT read here but by ``setup_training``
+        (``learn``), so loading for play stays light."""
+        loaded_dict = torch.load(path, weights_only=True)
+        self.ac.load_state_dict(loaded_dict["model_state_dict"])
+        self.opt_pi.load_state_dict(loaded_dict["optimizer_state_dict"])
+        for group_name, normalizer in self.normalizers.items():
+            normalizer.load_state_dict(loaded_dict[f"{group_name}_normalizer_state_dict"])
+        self.it = loaded_dict["iter"]
+        self.resume_path = path
+        return loaded_dict["infos"]
+
+    def _load_sidecar(self, path: str) -> None:
+        """Resume the training state from the sidecar of the checkpoint loaded by ``load``. Existing modules must load
+        strictly (missing keys error). A sidecar written before the failure head existed has exactly ``NEW_HEAD_KEYS``
+        missing: that is only accepted with ``resume_init_new_heads`` (``--agent.resume-init-new-heads``), in which case the
+        head is initialized fresh (and warmed up for ``fail_head_warmup_iters`` iterations from the loaded iteration before it
+        affects the policy)."""
         ck = torch.load(self._sidecar(path), map_location=self.device, weights_only=False)
         self.wm.load_state_dict(ck["wm"]), self.depth_head.load_state_dict(ck["depth_head"]), self.critic.load_state_dict(ck["critic"])
         self.opt_wm.load_state_dict(ck["opt_wm"]), self.opt_v.load_state_dict(ck["opt_v"])
-        self.it, self.wall_offset, self.sim_steps = ck["iteration"], ck["wall_time"], ck["sim_steps"]
-        assert self.it == self.stock.current_learning_iteration
+        self.wall_offset, self.sim_steps = ck["wall_time"], ck["sim_steps"]
+        assert self.it == ck["iteration"]
         self.mdp.xi_mean, self.mdp.xi_scale = ck["xi_mean"].to(self.device), ck["xi_scale"].to(self.device)
         self.xi_n = self.mdp.normalize_xi(self.xi)
         missing = [k for k in self.NEW_HEAD_KEYS if k not in ck]
         if missing:
             if len(missing) != len(self.NEW_HEAD_KEYS):
                 raise KeyError(f"sidecar {self._sidecar(path)} has only part of the failure-head keys; missing {missing}")
-            if not init_new_heads:
-                raise KeyError(f"sidecar {self._sidecar(path)} has no failure head ({list(self.NEW_HEAD_KEYS)}); pass --resume-init-new-heads to create it fresh")
+            if not self.cfg["resume_init_new_heads"]:
+                raise KeyError(f"sidecar {self._sidecar(path)} has no failure head ({list(self.NEW_HEAD_KEYS)}); set --agent.resume-init-new-heads to create it fresh")
             self.fail_head_start_it = self.it
             print(f"[INFO] sidecar has no failure head: initialized it fresh at iteration {self.it} "
                   f"(warmup {self.cfg['fail_head_warmup_iters']} iterations before it affects the policy).")
         else:
             self.fail_head.load_state_dict(ck["fail_head"]), self.opt_fail.load_state_dict(ck["opt_fail"])
             self.fail_head_start_it = ck["fail_head_start_it"]
+
+    def train_mode(self) -> None:
+        """Training mode of the policy and the normalizers (``OnPolicyRunner.train_mode``)."""
+        self.ac.train()
+        for normalizer in self.normalizers.values():
+            normalizer.train()
+
+    def eval_mode(self) -> None:
+        """Evaluation mode of the policy and the normalizers (``OnPolicyRunner.eval_mode``)."""
+        self.ac.eval()
+        for normalizer in self.normalizers.values():
+            normalizer.eval()
+
+    def get_inference_policy(self, device=None):
+        """Observation (flat ``policy`` group) -> action, as ``OnPolicyRunner.get_inference_policy``."""
+        self.eval_mode()
+        if device is not None:
+            self.ac.to(device)
+        self.normalizers["policy"].to(device)
+        return lambda x: self.ac.act_inference(self.normalizers["policy"](x))
+
+    def export_as_onnx(self, obs, export_model_dir: str) -> None:
+        """``0-depth_image.onnx`` + ``actor.onnx`` (``ac.export_as_onnx``) and ``policy_normalizer.npz`` in ``export_model_dir``."""
+        self.eval_mode()
+        obs = self.normalizers["policy"](obs)
+        self.normalizers["policy"].export(os.path.join(export_model_dir, "policy_normalizer.npz"))
+        self.ac.export_as_onnx(obs, export_model_dir)

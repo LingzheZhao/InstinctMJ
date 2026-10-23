@@ -24,7 +24,7 @@ from instinct_mj.rl.supermimic.depth import DepthPipeline
 from instinct_mj.rl.supermimic.mdp import CAMERA_CTX_DIM, DEPTH_SHAPE, GOAL_POS_NOISE, GOAL_ROT_NOISE, PROPRIO_NOISE
 from instinct_mj.rl.supermimic.rotations import quat_to_mat, so3_exp, yaw_mat
 from instinct_mj.rl.supermimic.sim import SimReader, build_mdp, camera_context
-from instinct_mj.scripts.supermimic.train import TASK_ID, build_env_cfg, make_vec_env
+from instinct_mj.scripts.supermimic.common import TASK_ID, build_env_cfg, make_vec_env
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--motion-folder", default="~/Xyk/Datasets/20251116_50cm_kneeClimbStep1")
@@ -35,7 +35,7 @@ args = parser.parse_args()
 
 dev = "cuda:0"
 cfg = build_env_cfg(TASK_ID, args.num_envs, args.motion_folder)
-assert cfg.auto_reset is False
+cfg.auto_reset = False  # as set by ``SuperMimicRunner.setup_training``
 cfg.observations["policy"].enable_corruption = False  # noise-free policy group: comparable with the analytic assembly
 cfg.seed = args.seed
 vec = make_vec_env(TASK_ID, cfg, dev)

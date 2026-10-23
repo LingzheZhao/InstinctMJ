@@ -4,13 +4,15 @@ This package trains the **depth policy of `Instinct-Perceptive-Shadowing-G1-v0` 
 [SuperMimic: Scaling Humanoid Whole-Body Control with One Differentiable World Model](https://arxiv.org/abs/2610.28480)
 (Liao et al., CoRL 2026) and its open reproduction [supermimic_vibed](https://github.com/zita-ch/supermimic_vibed) (MIT, Chong Zhang).
 
-- **Single stage, no PPO.** The simulator only collects data. A differentiable world model is fit to that data, and the policy is
+- **Single stage, no PPO.** The perceptive shadowing task is trained with SuperMimic only: its registered runner is
+  `SuperMimicRunner` and the PPO algorithm cfg of the task was removed. The simulator only collects data. A differentiable world model is fit to that data, and the policy is
   trained by back-propagation through time (BPTT) over 32-step imagined rollouts, with analytic task rewards and a critic bootstrap.
 - **Vision inside the world model.** Besides the dynamics, the world model learns the onboard depth camera: a depth head predicts the
   image the camera would see at every imagined state, so the depth policy can be trained in imagination.
 - **Unchanged task, unchanged policy.** The simulator is the existing perceptive shadowing task (all domain randomization, camera
   noise and resets). The policy is the task's own network (`EncoderActorCritic` with the Conv2d depth encoder), and checkpoints are
-  saved in the stock `OnPolicyRunner` format, so the existing Play task and ONNX export load them without any change.
+  saved by `SuperMimicRunner` in the `OnPolicyRunner` checkpoint format, so the Play task (`instinct-play`) and its ONNX export load them
+  without any change.
 
 ![world model](assets/world_model_architecture.png)
 
@@ -96,31 +98,54 @@ climb phase. 25% of each world-model batch is drawn from windows close to a real
 - The environment runs with `auto_reset=False`. After each step the runner reads the pre-reset state, applied action, contacts,
   rewards and clean depth image, then resets finished environments explicitly. This keeps the terminal transition in the buffer.
 - The task's own reset sampling (adaptive motion bins), domain randomization and terminations are used unchanged.
-- The camera noise models that are commented out in the task config (depth contour, artifacts, range-based stereo noise, Gaussian
-  blur, stereo too close) are enabled by the training script (`--depth-noise`, default on), together with the task's camera mount
-  randomization. The task files are not modified.
+- The camera noise models that are commented out in `make_perceptive_scene_sensors` (depth contour, artifacts, range-based stereo
+  noise, Gaussian blur, stereo too close) are enabled in `G1PerceptiveShadowingEnvCfg` (`_enable_depth_noise` in
+  `perceptive_shadowing_cfg.py`), together with the task's camera mount randomization. The Play configs inherit them, so the policy
+  is played under the noise it was trained with.
+- `auto_reset=False` is set by the runner (`setup_training`); the env cfg is not changed for it.
+
+## Runner design
+
+`SuperMimicRunner` is the `runner_entry_point` of the four perceptive shadowing tasks (`Instinct-Perceptive-Shadowing-G1-v0`,
+`-Play-v0`, `-OneMotion-v0`, `-OneMotion-Play-v0`), so `instinct-train` and `instinct-play` need no special casing. It does not use
+`OnPolicyRunner` or any PPO object: the policy is built with `instinct_rl.modules.build_actor_critic` and the normalizers with
+`build_normalizer` from the task's policy/normalizer cfg, with its own AdamW (betas 0.9/0.95) for the policy.
+
+- **Construction is light** (this is all that play does): policy, optimizer, normalizers, and `load`, `get_inference_policy`,
+  `export_as_onnx`, which behave and write files like the `OnPolicyRunner` ones.
+- **Training components are lazy.** The analytic MDP heads, heightmap, world model, depth/failure heads, critic, replay buffer and
+  `torch.compile` are built by `setup_training()`, which `learn()` calls first. `load` only reads the policy checkpoint and
+  remembers its path; the sidecar `supermimic_state_<it>.pt` is read by `setup_training`, so a resumed run restores everything
+  and a Play run never touches it.
+- `save` writes the `OnPolicyRunner` checkpoint dict plus the sidecar; existing checkpoints (also those of PPO runs, for the
+  policy part) load unchanged.
 
 ## Usage
 
 ### Install
 
-The package adds two console entry points in `pyproject.toml`; reinstall the package (`uv pip install -e .`) to get them. Without
-reinstalling, use `python -m instinct_mj.scripts.supermimic.train` and `python -m instinct_mj.scripts.supermimic.evaluate`.
+Training and play use the regular `instinct-train` / `instinct-play` entry points of the task. The evaluation script has its own
+console entry point in `pyproject.toml`; reinstall the package (`uv pip install -e .`) to get it. Without reinstalling, use
+`python -m instinct_mj.scripts.supermimic.evaluate`.
 
 ### Train
 
+The dataset is the task's `MOTION_FOLDER` (`config/g1/perceptive_shadowing_cfg.py`; the folder holds the motion files and a
+`metadata.yaml`).
+
 ```bash
-instinct-supermimic-train --motion-folder ~/Xyk/Datasets/20251116_50cm_kneeClimbStep1 --num-envs 1024 \
-    --agent.save-interval 1000 --agent.max-iterations 40000
+instinct-train Instinct-Perceptive-Shadowing-G1-v0 --num-envs 1024 --agent.save-interval 1000 --agent.max-iterations 40000
 ```
 
 Resume (loads the policy checkpoint and its world-model sidecar; the replay buffer is refilled):
 
 ```bash
-instinct-supermimic-train --motion-folder ... --resume logs/instinct_rl/g1_perceptive_shadowing/<run>/model_<it>.pt
+instinct-train Instinct-Perceptive-Shadowing-G1-v0 --num-envs 1024 \
+    --agent.load-run <run_dir_name_or_absolute_path> --agent.load-checkpoint model_<it>.pt
 ```
 
-When resuming a checkpoint that was saved before the failure head existed, add `--resume-init-new-heads`.
+When resuming a checkpoint that was saved before the failure head existed, add `--agent.resume-init-new-heads`. Single GPU only
+(`--gpu-ids` with several GPUs and `--viewer native` are not supported by the runner).
 
 ### Evaluate
 
@@ -138,26 +163,30 @@ Results go to `<run>/eval/` (`results.csv`, `eval_<it>.json`, `videos/`). Every 
 python webplay_supermimic.py [<run>/model_<it>.pt]     # viser web viewer, default: newest checkpoint of the run
 ```
 
-Because checkpoints use the stock format, the regular `instinct-play` on `Instinct-Perceptive-Shadowing-G1-Play-v0` and
-`--export-onnx` also work (point the Play config to the same dataset).
+The regular `instinct-play` on `Instinct-Perceptive-Shadowing-G1-Play-v0` loads the checkpoints through the same runner
+(`--viewer none --export-onnx True` writes `0-depth_image.onnx`, `actor.onnx` and `policy_normalizer.npz`; the Play config uses the
+same `MOTION_FOLDER` unless `MOTION_FOLDER_PLAY` is set).
 
 ### Outputs
 
-Runs are written to `logs/instinct_rl/g1_perceptive_shadowing/<timestamp>_supermimic/`:
+Runs are written to `logs/instinct_rl/g1_perceptive_shadowing/<timestamp>_<env run name>_supermimic/`:
 
-- `model_<it>.pt`: policy, policy optimizer and policy normalizer in the stock `OnPolicyRunner` format.
-- `supermimic_state_<it>.pt`: world model, depth heads, failure head, critic, their optimizers and training state (for `--resume`).
-- `params/`: the env config, the stock agent config and the SuperMimic config.
+- `model_<it>.pt`: policy, policy optimizer and the observation normalizers in the `OnPolicyRunner` checkpoint format (`model_state_dict`,
+  `optimizer_state_dict`, `<group>_normalizer_state_dict`, `iter`, `infos`).
+- `supermimic_state_<it>.pt`: world model, depth heads, failure head, critic, their optimizers and training state (read when resuming).
+- `params/`: the env config and the agent config (policy, normalizers and the SuperMimic fields).
+- `git/`: git status and diff of the repository at launch.
 - TensorBoard events: world-model losses, depth error vs. open-loop horizon, imagined vs. real termination rates, policy and critic
   losses, simulator reward and episode statistics.
 
 ## Configuration
 
-Set any field on the command line as `--agent.<field>` (underscores become hyphens, e.g. `--agent.pi-batch 2048`).
+The SuperMimic fields are part of the task's agent cfg (`G1PerceptiveShadowingRunnerCfg` in `config/g1/rl_cfg.py`, which also
+holds the policy architecture and normalizers). Set any field on the command line as `--agent.<field>` (underscores become hyphens, e.g. `--agent.pi-batch 2048`).
 
 | Group | Field | Default | Meaning |
 |---|---|---|---|
-| Collection | `seed` | 42 | Random seed |
+| Collection | `seed` | 42 | Random seed (`InstinctRlOnPolicyRunnerCfg`) |
 | | `buffer_steps` | 1000 | Replay buffer length (vectorized env steps) |
 | | `utd` | 0.4 | Updates per vectorized simulator step |
 | | `warmup_steps` | 64 | Simulator steps collected before any update |
@@ -180,6 +209,7 @@ Set any field on the command line as `--agent.<field>` (underscores become hyphe
 | | `fail_windows` | 512 | Windows per batch that train the failure head |
 | | `fail_clip` | 0.95 | Upper clip of the failure probability in imagination |
 | | `fail_pos_weight` | 1.0 | BCE positive weight |
+| | `resume_init_new_heads` | False | Allow resuming a sidecar without a failure head (the head is created fresh) |
 | Policy / critic | `horizon` | 32 | Imagination horizon H |
 | | `pi_batch` | 1024 | Imagination starts per policy update |
 | | `gamma` | 0.99 | Discount |
@@ -202,12 +232,12 @@ Set any field on the command line as `--agent.<field>` (underscores become hyphe
 | Logging | `save_interval` | 2000 | Iterations between checkpoints |
 | | `log_interval` | 50 | Iterations between logs |
 
-Other arguments of `instinct-supermimic-train`: `--task` (`Instinct-Perceptive-Shadowing-G1-v0`), `--num-envs` (1024),
-`--motion-folder`, `--device` (`cuda:0`), `--depth-noise / --no-depth-noise` (on), `--resume`, `--resume-init-new-heads`,
-`--log-root` (`logs/instinct_rl`).
+`seed`, `max_iterations`, `save_interval` and `log_interval` are the fields of `InstinctRlOnPolicyRunnerCfg` (task defaults 42,
+320000, 2000, 50); the generic `instinct-train` arguments (`--num-envs`, `--device`, `--agent.load-run`,
+`--agent.load-checkpoint`, ...) apply as for every task.
 
 Arguments of `instinct-supermimic-eval`: `--motion-folder` (required), `--checkpoint` or `--run-dir` (with `--every`, `--watch`,
-`--watch-poll-s`, `--watch-max-idle-s`), `--num-envs` (64), `--min-episodes-per-motion` (3), `--depth-noise` (on),
+`--watch-poll-s`, `--watch-max-idle-s`), `--num-envs` (64), `--min-episodes-per-motion` (3),
 `--episode-length-s` (30), `--seed` (7), `--video`, `--video-only`, `--video-motions`, `--video-size`, `--video-distance`,
 `--video-elevation`, `--video-azimuth`.
 
@@ -215,8 +245,8 @@ Arguments of `instinct-supermimic-eval`: `--motion-folder` (required), `--checkp
 
 | File | Content |
 |---|---|
-| `config.py` | `SuperMimicRunnerCfg` |
-| `runner.py` | `SuperMimicRunner`: collection, world-model fitting, imagination/BPTT, critic, logging, save/load |
+| `config.py` | `SuperMimicRunnerCfg` (hyperparameters mixed into the task's agent cfg) |
+| `runner.py` | `SuperMimicRunner`: the task's runner (policy, normalizers, save/load, `get_inference_policy`, `export_as_onnx`) and, built lazily by `setup_training`, collection, world-model fitting, imagination/BPTT, critic, logging |
 | `networks.py` | `WorldModel`, `DepthHead` / `DepthEnsemble`, `FailureHead`, `Critic`, `RunningNorm` |
 | `mdp.py` | Analytic task heads: rewards, hard/soft terminations, policy observation assembly, critic features |
 | `depth.py` | `DepthPipeline`: clean/noised processed depth images, camera noise models applied to predicted images |
@@ -226,7 +256,7 @@ Arguments of `instinct-supermimic-eval`: `--motion-folder` (required), `--checkp
 | `terrain.py` | Terrain heightmap (ray-cast once, cached on disk) and differentiable height scan |
 | `buffer.py` | GPU replay buffer (windows, imagination starts, depth pairs, failure-weighted sampling) |
 | `rotations.py` | Rotation utilities |
-| `scripts/supermimic/train.py`, `evaluate.py` | Training and evaluation entry points |
+| `scripts/supermimic/evaluate.py`, `common.py` | Evaluation entry point; dataset override and env construction helpers |
 | `tests/supermimic/` | Parity checks, failure diagnosis and benchmarks |
 | `webplay_supermimic.py` (repo root) | viser web viewer |
 
@@ -235,7 +265,7 @@ Arguments of `instinct-supermimic-eval`: `--motion-folder` (required), `--checkp
 | Script | Checks |
 |---|---|
 | `tests/supermimic/check_analytic_heads.py` | Analytic heads against the running env: reference indexing (exact), FK (≤ 2.3e-5), reward terms (≤ 2e-6 on the same state), terminations on both sides of every threshold (no mismatch), policy observation assembly (≤ 1.4e-5), camera offset reconstruction, terminal states. Fails with a non-zero exit code. |
-| `tests/supermimic/check_play_load.py` | Loads a checkpoint through the stock Play path, runs a headless rollout and exports ONNX. |
+| `tests/supermimic/check_play_load.py` | Loads a checkpoint through the Play path (the task's registered runner), runs a headless rollout and exports ONNX. |
 | `tests/supermimic/check_policy_update_parity.py` | The compiled imagination/BPTT path matches the eager one (loss and actor gradients). |
 | `tests/supermimic/diagnose_failure.py` | Per-step failure analysis of one motion and imagined-vs-real termination rates. |
 | `tests/supermimic/bench_*.py` | Speed and parity benchmarks of FK, noise models and the runner. |
@@ -254,7 +284,7 @@ recomputes imagination activations in the backward pass and is expected to rough
   terminations differ slightly near thresholds.
 - Issues of the existing task, not fixed here:
   - The task's `height_scanner` only includes geom group 0, but the terrain is in group 2, so the critic `height_scan` observation
-    is constant. It is kept so that stock Play can load the checkpoints; the world model uses its own heightmap.
+    is constant. It is kept so that Play can load the checkpoints (the critic input size must match); the world model uses its own heightmap.
   - `TerrainMotion._safe_motion_resampling` keeps the old start time when it replaces a motion without terrain, which can index past
     the end of the replacement motion for some seeds (seed 42 is safe).
 

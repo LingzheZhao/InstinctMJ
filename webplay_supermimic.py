@@ -14,7 +14,7 @@ import yaml
 import instinct_mj.scripts.instinct_rl.play as playmod
 import instinct_mj.tasks  # noqa: F401  (register tasks)
 from instinct_mj.scripts.instinct_rl.play import PlayConfig, run_play
-from instinct_mj.scripts.supermimic.train import _enable_depth_noise, apply_motion_folder
+from instinct_mj.scripts.supermimic.common import apply_motion_folder
 
 MOTION_FOLDER = os.path.expanduser("~/Xyk/Datasets/20251116_50cm_kneeClimbStep1")
 RUN_DIR = "logs/instinct_rl/g1_perceptive_shadowing/2026-10-22_13-02-06_supermimic"
@@ -25,7 +25,6 @@ _real_load = playmod.load_env_cfg
 def _patched_load(task_id, play=False):
     cfg = _real_load(task_id, play=play)
     apply_motion_folder(cfg, MOTION_FOLDER, restore_baseline_sampling=False)
-    _enable_depth_noise(cfg)  # the policy was trained with the camera noise models on
     # one terrain row per terrain of the dataset, so every motion has its terrain in the scene
     with open(os.path.join(MOTION_FOLDER, "metadata.yaml"), encoding="utf-8") as f:
         num_terrains = len(yaml.safe_load(f)["terrains"])

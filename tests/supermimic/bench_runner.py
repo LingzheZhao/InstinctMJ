@@ -12,9 +12,8 @@ import time
 
 import torch
 
-from instinct_mj.rl.supermimic.config import SuperMimicRunnerCfg
 from instinct_mj.rl.supermimic.runner import SuperMimicRunner
-from instinct_mj.scripts.supermimic.train import TASK_ID, build_env_cfg, make_vec_env
+from instinct_mj.scripts.supermimic.common import TASK_ID, build_env_cfg, make_vec_env
 from instinct_mj.tasks.registry import load_instinct_rl_cfg
 
 parser = argparse.ArgumentParser()
@@ -29,7 +28,8 @@ args = parser.parse_args()
 
 os.environ.setdefault("MUJOCO_GL", "egl")
 torch.backends.cudnn.benchmark = args.cudnn_benchmark
-cfg = SuperMimicRunnerCfg()
+cfg = load_instinct_rl_cfg(TASK_ID)
+cfg.device = "cuda:0"
 defaults = dict(buffer_steps=150, warmup_steps=64, wm_batch=512, depth_windows=128, depth_pairs=128, fail_windows=128, pi_batch=256,
                 wm_only_iters=0, compile=True)  # fmt: skip
 for k, v in defaults.items():
@@ -40,10 +40,9 @@ for kv in args.set:
     setattr(cfg, k, (v.lower() == "true") if isinstance(old, bool) else type(old)(v))
 env_cfg = build_env_cfg(TASK_ID, args.num_envs, "~/Xyk/Datasets/20251116_50cm_kneeClimbStep1")
 env_cfg.seed = 42  # as the training script (a random terrain grid can lack a terrain, see the note in the report)
-stock = load_instinct_rl_cfg(TASK_ID)
-stock.device = "cuda:0"
 vec = make_vec_env(TASK_ID, env_cfg, "cuda:0")
-runner = SuperMimicRunner(vec, {**cfg.to_dict(), "stock": stock.to_dict()}, log_dir=None, device="cuda:0")
+runner = SuperMimicRunner(vec, cfg.to_dict(), log_dir=None, device="cuda:0")
+runner.setup_training()
 stats = {"r": [], "r_gap": [], "ep_len": [], "term": [], "done": []}
 runner.collect(cfg.warmup_steps, stats)
 runner.it = 10**6  # the failure head is "warmed up": exercise its imagination path

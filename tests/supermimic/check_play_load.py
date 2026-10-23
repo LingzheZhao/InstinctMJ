@@ -1,5 +1,5 @@
-"""Loads a SuperMimic checkpoint (stock ``OnPolicyRunner`` format) through the STOCK play path (``instinct_mj.scripts.instinct_rl.play.run_play``:
-stock ``OnPolicyRunner.load`` + ``get_inference_policy`` + headless rollout + ``export_as_onnx``) on the Play task.
+"""Loads a SuperMimic checkpoint (``OnPolicyRunner`` checkpoint format) through the play path (``instinct_mj.scripts.instinct_rl.play.run_play``: the task's registered
+``SuperMimicRunner.load`` + ``get_inference_policy`` + headless rollout + ``export_as_onnx``) on the Play task.
 
 The only patch is the dataset location of the Play env cfg (the task's default folder does not exist locally).
 

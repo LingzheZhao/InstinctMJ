@@ -176,12 +176,15 @@ uv run python -m instinct_mj.scripts.list_envs
 
 ## SuperMimic World-Model Training (Perceptive Shadowing)
 
-`Instinct-Perceptive-Shadowing-G1-v0` can also be trained without PPO, following SuperMimic: the simulator only collects data, a
-differentiable world model (dynamics plus a learned depth-image head) is fit to it, and the task's own depth policy is trained by
-backpropagation through imagined rollouts. Checkpoints load in the regular Play task.
+The perceptive shadowing tasks (`Instinct-Perceptive-Shadowing-G1-*`) are trained with SuperMimic instead of PPO: the simulator
+only collects data, a differentiable world model (dynamics plus a learned depth-image head) is fit to it, and the task's own depth
+policy is trained by backpropagation through imagined rollouts. The task's runner is `SuperMimicRunner`, so the usual commands
+apply and the checkpoints load in the regular Play task (set the dataset via `MOTION_FOLDER` in
+`perceptive_shadowing_cfg.py`).
 
 ```bash
-uv run python -m instinct_mj.scripts.supermimic.train --motion-folder <dataset_with_metadata.yaml> --num-envs 1024
+uv run instinct-train Instinct-Perceptive-Shadowing-G1-v0 --num-envs 1024
+uv run instinct-play Instinct-Perceptive-Shadowing-G1-Play-v0 --checkpoint-file <run>/model_<it>.pt --viewer none --export-onnx True
 uv run python -m instinct_mj.scripts.supermimic.evaluate --checkpoint <run>/model_<it>.pt --motion-folder <dataset_with_metadata.yaml>
 ```
 

@@ -14,21 +14,20 @@ import os
 import torch
 
 from instinct_mj.rl.supermimic import networks
-from instinct_mj.rl.supermimic.config import SuperMimicRunnerCfg
 from instinct_mj.rl.supermimic.runner import SuperMimicRunner
-from instinct_mj.scripts.supermimic.train import TASK_ID, build_env_cfg, make_vec_env
+from instinct_mj.scripts.supermimic.common import TASK_ID, build_env_cfg, make_vec_env
 from instinct_mj.tasks.registry import load_instinct_rl_cfg
 
 os.environ.setdefault("MUJOCO_GL", "egl")
-cfg = SuperMimicRunnerCfg()
+cfg = load_instinct_rl_cfg(TASK_ID)
+cfg.device = "cuda:0"
 for k, v in dict(buffer_steps=120, warmup_steps=64, pi_batch=128, wm_batch=256, depth_windows=64, depth_pairs=64, fail_windows=64, wm_only_iters=0).items():
     setattr(cfg, k, v)
 env_cfg = build_env_cfg(TASK_ID, 32, "~/Xyk/Datasets/20251116_50cm_kneeClimbStep1")
 env_cfg.seed = 42
-stock = load_instinct_rl_cfg(TASK_ID)
-stock.device = "cuda:0"
 vec = make_vec_env(TASK_ID, env_cfg, "cuda:0")
-runner = SuperMimicRunner(vec, {**cfg.to_dict(), "stock": stock.to_dict()}, log_dir=None, device="cuda:0")
+runner = SuperMimicRunner(vec, cfg.to_dict(), log_dir=None, device="cuda:0")
+runner.setup_training()
 runner.collect(64, {"r": [], "r_gap": [], "ep_len": [], "term": [], "done": []})
 runner.it = 10**6  # failure head active in imagination
 # make the fail head non-trivial (p_fail ~ 0.3%, input dependent) so that its gradient path is compared as well

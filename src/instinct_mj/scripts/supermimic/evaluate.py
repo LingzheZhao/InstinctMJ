@@ -1,11 +1,11 @@
-"""Evaluate stock-format checkpoints (SuperMimic runs, ``instinct-train`` runs, ...) on the Play setting of the task.
+"""Evaluate ``OnPolicyRunner``-format checkpoints (``instinct-train`` runs of the task, ...) on the Play setting of the task.
 
     instinct-supermimic-eval --checkpoint <run>/model_5000.pt --motion-folder ~/Xyk/Datasets/20251116_50cm_kneeClimbStep1
     instinct-supermimic-eval --run-dir <run> --every 5 --watch --motion-folder ...
 
 Setting: the task's Play env cfg (no domain randomization, no pushes, every episode starts at motion t=0, ``independent``
-sampling), the same ``--motion-folder`` override and camera noise (``--depth-noise``, default on) as in training. The
-policy is loaded with the stock ``OnPolicyRunner.load`` + ``get_inference_policy`` (like ``play.run_play``).
+sampling), the same ``--motion-folder`` override and camera noise (part of the task cfg) as in training. The policy is
+loaded through the task's registered runner (``SuperMimicRunner.load`` + ``get_inference_policy``, like ``play.run_play``).
 
 Differences to Play, on purpose:
   * The three tracking terminations (``base_pos_too_far``, ``base_pg_too_far``, ``link_pos_too_far``) that Play removes are
@@ -41,13 +41,18 @@ import numpy as np
 import torch
 import tyro
 import yaml
-from instinct_rl.runners import OnPolicyRunner
 from mjlab.utils.wrappers import VideoRecorder
 from mjlab.viewer.viewer_config import ViewerConfig
 
 import instinct_mj.tasks  # noqa: F401
-from instinct_mj.scripts.supermimic.train import _enable_depth_noise, apply_motion_folder
-from instinct_mj.tasks.registry import load_env_cfg, load_env_cls, load_instinct_rl_cfg, load_vecenv_cls
+from instinct_mj.scripts.supermimic.common import apply_motion_folder
+from instinct_mj.tasks.registry import (
+    load_env_cfg,
+    load_env_cls,
+    load_instinct_rl_cfg,
+    load_runner_cls,
+    load_vecenv_cls,
+)
 from instinct_mj.tasks.shadowing.perceptive.perceptive_env_cfg import make_terminations
 
 PLAY_TASK = "Instinct-Perceptive-Shadowing-G1-Play-v0"
@@ -59,7 +64,7 @@ SUCCESS_TERM = "dataset_exhausted"
 class EvalArgs:
     motion_folder: str
     checkpoint: str | None = None
-    """A single stock-format checkpoint (``model_<it>.pt``)."""
+    """A single ``OnPolicyRunner``-format checkpoint (``model_<it>.pt``)."""
     run_dir: str | None = None
     """Evaluate every ``every``-th ``model_<it>.pt`` of this run dir."""
     every: int = 1
@@ -69,7 +74,6 @@ class EvalArgs:
     watch_max_idle_s: float = 3600.0
     num_envs: int = 64
     min_episodes_per_motion: int = 3
-    depth_noise: bool = True
     episode_length_s: float = 30.0
     device: str = "cuda:0"
     seed: int = 7
@@ -95,8 +99,6 @@ def build_eval_cfg(args: EvalArgs, num_envs: int, render: bool = False):
     cfg.scene.num_envs = num_envs
     cfg.episode_length_s = args.episode_length_s
     apply_motion_folder(cfg, args.motion_folder, restore_baseline_sampling=False)
-    if args.depth_noise:
-        _enable_depth_noise(cfg)
     # no reference robot / debug visualization / monitors
     cfg.scene.entities.pop("robot_reference", None)
     motion_reference_cfg = next(s for s in cfg.scene.sensors if s.name == "motion_reference")
@@ -132,12 +134,12 @@ class Evaluator:
                 f"num_envs={args.num_envs} < {args.min_episodes_per_motion} x {self.K} motions: not every motion would get "
                 f"{args.min_episodes_per_motion} episodes."
             )
-        self.stock_cfg = load_instinct_rl_cfg(PLAY_TASK)
-        self.stock_cfg.device = args.device
+        self.agent_cfg = load_instinct_rl_cfg(PLAY_TASK)
+        self.agent_cfg.device = args.device
         env = load_env_cls(PLAY_TASK)(cfg=cfg, device=args.device, render_mode=None)
         self.vec = load_vecenv_cls(PLAY_TASK)(env, policy_group="policy", critic_group="critic")
         self.env = self.vec.unwrapped
-        self.runner = OnPolicyRunner(self.vec, self.stock_cfg.to_dict(), log_dir=None, device=args.device)
+        self.runner = load_runner_cls(PLAY_TASK)(self.vec, self.agent_cfg.to_dict(), log_dir=None, device=args.device)
         self.dt = self.env.step_dt
         self.mgr = self.env.scene["motion_reference"]
         self.buffer = next(iter(self.mgr.motion_buffers.values()))
@@ -261,12 +263,12 @@ def choose_camera(env, buffer, motion_index: int, args: EvalArgs) -> tuple[float
 def record_videos(args: EvalArgs, checkpoint: str, folder: Path) -> None:
     """One episode per motion with the existing mjlab ``VideoRecorder`` on a single-env render env."""
     cfg, motion_files = build_eval_cfg(args, 1, render=True)
-    stock_cfg = load_instinct_rl_cfg(PLAY_TASK)
-    stock_cfg.device = args.device
+    agent_cfg = load_instinct_rl_cfg(PLAY_TASK)
+    agent_cfg.device = args.device
     env = load_env_cls(PLAY_TASK)(cfg=cfg, device=args.device, render_mode="rgb_array")
     buffer = next(iter(env.scene["motion_reference"].motion_buffers.values()))
     vec0 = load_vecenv_cls(PLAY_TASK)(env, policy_group="policy", critic_group="critic")
-    runner = OnPolicyRunner(vec0, stock_cfg.to_dict(), log_dir=None, device=args.device)
+    runner = load_runner_cls(PLAY_TASK)(vec0, agent_cfg.to_dict(), log_dir=None, device=args.device)
     runner.load(checkpoint)
     policy = runner.get_inference_policy(device=args.device)
     for k, name in enumerate(motion_files):

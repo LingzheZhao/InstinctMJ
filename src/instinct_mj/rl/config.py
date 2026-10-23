@@ -98,10 +98,10 @@ class InstinctRlNormalizerCfg:
 class InstinctRlOnPolicyRunnerCfg:
     seed: int = 42
     device: str = "cuda:0"
-    num_steps_per_env: int = 24
+    num_steps_per_env: int | None = 24
     max_iterations: int = 30_000
     policy: InstinctRlActorCriticCfg = field(default_factory=InstinctRlActorCriticCfg)
-    algorithm: InstinctRlPpoAlgorithmCfg = field(default_factory=InstinctRlPpoAlgorithmCfg)
+    algorithm: InstinctRlPpoAlgorithmCfg | None = field(default_factory=InstinctRlPpoAlgorithmCfg)
     normalizers: dict[str, InstinctRlNormalizerCfg] = field(default_factory=dict)
     save_interval: int = 500
     log_interval: int = 1

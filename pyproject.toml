@@ -36,7 +36,6 @@ dependencies = [
 [project.scripts]
 instinct-train = "instinct_mj.scripts.instinct_rl.train:main"
 instinct-play = "instinct_mj.scripts.instinct_rl.play:main"
-instinct-supermimic-train = "instinct_mj.scripts.supermimic.train:main"
 instinct-supermimic-eval = "instinct_mj.scripts.supermimic.evaluate:main"
 instinct-list-envs = "instinct_mj.scripts.list_envs:main"
 instinct-amass-filter = "instinct_mj.scripts.amass_filter:entry_point"

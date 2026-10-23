@@ -15,6 +15,7 @@ from instinct_mj.rl import (
     InstinctRlOnPolicyRunnerCfg,
     InstinctRlPpoAlgorithmCfg,
 )
+from instinct_mj.rl.supermimic.config import SuperMimicRunnerCfg
 
 
 @dataclass(kw_only=True)
@@ -67,61 +68,36 @@ class PolicyCfg(InstinctRlEncoderActorCriticCfg):
 
 
 @dataclass(kw_only=True)
-class AlgorithmCfg(InstinctRlPpoAlgorithmCfg):
-    class_name: str = "PPO"
-
-    value_loss_coef: float = 1.0
-
-    use_clipped_value_loss: bool = True
-
-    clip_param: float = 0.2
-
-    entropy_coef: float = 0.005
-
-    num_learning_epochs: int = 5
-
-    num_mini_batches: int = 4
-
-    learning_rate: float = 1e-3
-
-    schedule: str = "adaptive"
-
-    gamma: float = 0.99
-
-    lam: float = 0.95
-
-    desired_kl: float = 0.01
-
-    max_grad_norm: float = 1.0
-
-
-@dataclass(kw_only=True)
 class NormalizersCfg:
     policy: InstinctRlNormalizerCfg = field(default_factory=lambda: InstinctRlNormalizerCfg())
     critic: InstinctRlNormalizerCfg = field(default_factory=lambda: InstinctRlNormalizerCfg())
 
 
 @dataclass(kw_only=True)
-class G1PerceptiveShadowingPPORunnerCfg(InstinctRlOnPolicyRunnerCfg):
+class G1PerceptiveShadowingRunnerCfg(InstinctRlOnPolicyRunnerCfg, SuperMimicRunnerCfg):
+    """Agent cfg of the perceptive shadowing task, trained with SuperMimic (``SuperMimicRunner``): the policy architecture
+    and observation normalizers of the task plus the SuperMimic hyperparameters (flat, ``--agent.<field>``). There is no
+    PPO algorithm: ``algorithm`` and ``num_steps_per_env`` stay unset."""
+
     policy: PolicyCfg = field(default_factory=lambda: PolicyCfg())
-    algorithm: AlgorithmCfg = field(default_factory=lambda: AlgorithmCfg())
+    algorithm: None = None
     normalizers: NormalizersCfg = field(default_factory=lambda: NormalizersCfg())
 
-    num_steps_per_env: int = 24
+    num_steps_per_env: None = None
 
-    max_iterations: int = 50000
+    max_iterations: int = 320_000
 
-    save_interval: int = 1000
+    save_interval: int = 2000
 
-    log_interval: int = 10
+    log_interval: int = 50
 
     experiment_name: str = "g1_perceptive_shadowing"
 
-    load_run: object | None = None
+    load_run: str | None = None
 
     def __post_init__(self):
         self.resume = self.load_run is not None
-        self.run_name = "".join(
+        self.run_name = "supermimic" + "".join(
             [
                 f"_GPU{os.environ.get('CUDA_VISIBLE_DEVICES')}" if "CUDA_VISIBLE_DEVICES" in os.environ else "",
             ]
@@ -351,11 +327,11 @@ class G1PerceptiveVaePPORunnerCfg(InstinctRlOnPolicyRunnerCfg):
 
 
 def g1_perceptive_shadowing_instinct_rl_cfg() -> InstinctRlOnPolicyRunnerCfg:
-    return G1PerceptiveShadowingPPORunnerCfg()
+    return G1PerceptiveShadowingRunnerCfg()
 
 
 def g1_perceptive_shadowing_one_motion_instinct_rl_cfg() -> InstinctRlOnPolicyRunnerCfg:
-    cfg = G1PerceptiveShadowingPPORunnerCfg()
+    cfg = G1PerceptiveShadowingRunnerCfg()
     cfg.experiment_name = "g1_perceptive_shadowing_one_motion"
     return cfg
 
