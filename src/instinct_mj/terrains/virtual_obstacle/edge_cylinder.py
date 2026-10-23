@@ -6,6 +6,7 @@ import random
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING
 
+import cv2
 import numpy as np
 import torch
 import trimesh
