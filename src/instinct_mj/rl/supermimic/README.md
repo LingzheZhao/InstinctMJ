@@ -38,7 +38,7 @@ Per motion at iteration 12000: diveroll4 (4 terrains) 92–100%, rollVault11 100
 kneelClimbStep1 92% / 100% (with wall / without wall).
 
 This run used the code before the failure head was added. To reproduce it with the current code, add
-`--agent.no-fail-head --agent.wm-failure-frac 0 --agent.wm-holdout-envs 0`.
+`--agent.fail-head False --agent.wm-failure-frac 0 --agent.wm-holdout-envs 0`.
 
 ## Method
 
@@ -88,7 +88,7 @@ climb phase. 25% of each world-model batch is drawn from windows close to a real
   8 steps of proprioception history with the task's noise.
 - Imagination step 0 uses the real buffered image. From step 1 on, the depth head predicts the clean image, which then goes through
   the same camera noise models as the real camera before the policy sees it. Each imagined rollout uses one random ensemble member.
-  The predicted image is fed to the policy with stop-gradient by default (`--agent.depth-grad` enables gradients).
+  The predicted image is fed to the policy with stop-gradient by default (`--agent.depth-grad True` enables gradients).
 - Rewards and terminations are analytic re-implementations of the task's terms (Gaussian tracking of base and links, action rate,
   joint limits, applied torque limits, undesired contacts via the learned contact probabilities). Terminations are sigmoid-softened.
 - The critic (MLP 256-128) uses privileged features: invariant state, tracking errors, ξ, goal and terrain scan.
@@ -144,7 +144,7 @@ instinct-train Instinct-Perceptive-Shadowing-G1-v0 --num-envs 1024 \
     --agent.load-run <run_dir_name_or_absolute_path> --agent.load-checkpoint model_<it>.pt
 ```
 
-When resuming a checkpoint that was saved before the failure head existed, add `--agent.resume-init-new-heads`. Single GPU only
+When resuming a checkpoint that was saved before the failure head existed, add `--agent.resume-init-new-heads True`. Single GPU only
 (`--gpu-ids` with several GPUs and `--viewer native` are not supported by the runner).
 
 ### Evaluate
@@ -182,7 +182,7 @@ Runs are written to `logs/instinct_rl/g1_perceptive_shadowing/<timestamp>_<env r
 ## Configuration
 
 The SuperMimic fields are part of the task's agent cfg (`G1PerceptiveShadowingRunnerCfg` in `config/g1/rl_cfg.py`, which also
-holds the policy architecture and normalizers). Set any field on the command line as `--agent.<field>` (underscores become hyphens, e.g. `--agent.pi-batch 2048`).
+holds the policy architecture and normalizers). Set any field on the command line as `--agent.<field>` (underscores become hyphens, e.g. `--agent.pi-batch 2048`; booleans take a value, e.g. `--agent.fail-head False`).
 
 | Group | Field | Default | Meaning |
 |---|---|---|---|
@@ -273,7 +273,7 @@ Arguments of `instinct-supermimic-eval`: `--motion-folder` (required), `--checkp
 ## Performance
 
 On an RTX 3090 with 1024 environments, one iteration takes about 2.3–2.6 s (about 0.4 it/s) with 13.4 GB peak GPU memory. Most of
-the time is spent fitting the depth heads (convolutions over 8-step windows for 3 ensemble members). `--agent.checkpoint-imagination`
+the time is spent fitting the depth heads (convolutions over 8-step windows for 3 ensemble members). `--agent.checkpoint-imagination True`
 recomputes imagination activations in the backward pass and is expected to roughly halve the peak memory, at about 10% more time.
 
 ## Known limitations
