@@ -37,7 +37,7 @@ G1_CFG = G1_29DOF_TORSOBASE_POPSICLE_CFG
 
 # NOTE: Change this if your local perceptive shadowing dataset lives elsewhere.
 # The folder should contain the motion files and a `metadata.yaml`.
-MOTION_FOLDER = "~/Xyk/Datasets/her_leveled"
+MOTION_FOLDER = "~/Datasets/c167_self_collision_coupled_20260911"
 
 # NOTE: Optional play override for perceptive shadowing.
 # Leave this as `None` to reuse `MOTION_FOLDER`, or set it to another local
