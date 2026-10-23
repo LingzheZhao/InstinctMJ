@@ -1,6 +1,8 @@
 """Launch the viser web viewer for the SuperMimic-trained perceptive shadowing policy.
 
-Usage: python webplay_supermimic.py [checkpoint]   (default: newest model_*.pt of the overnight run)
+Usage: python webplay_supermimic.py [checkpoint]
+(default: the newest model_*.pt of the newest SuperMimic run under logs/instinct_rl/g1_perceptive_shadowing/; the dataset is the
+task's ``MOTION_FOLDER``, see ``perceptive_shadowing_cfg.py``)
 """
 import glob
 import os
@@ -14,17 +16,16 @@ import yaml
 import instinct_mj.scripts.instinct_rl.play as playmod
 import instinct_mj.tasks  # noqa: F401  (register tasks)
 from instinct_mj.scripts.instinct_rl.play import PlayConfig, run_play
-from instinct_mj.scripts.supermimic.common import apply_motion_folder
+from instinct_mj.tasks.shadowing.perceptive.config.g1.perceptive_shadowing_cfg import MOTION_FOLDER as _TASK_MOTION_FOLDER
 
-MOTION_FOLDER = os.path.expanduser("~/Xyk/Datasets/20251116_50cm_kneeClimbStep1")
-RUN_DIR = "logs/instinct_rl/g1_perceptive_shadowing/2026-10-22_13-02-06_supermimic"
+MOTION_FOLDER = os.path.expanduser(_TASK_MOTION_FOLDER)
+RUNS_GLOB = "logs/instinct_rl/g1_perceptive_shadowing/*supermimic*"
 
 _real_load = playmod.load_env_cfg
 
 
 def _patched_load(task_id, play=False):
     cfg = _real_load(task_id, play=play)
-    apply_motion_folder(cfg, MOTION_FOLDER, restore_baseline_sampling=False)
     # one terrain row per terrain of the dataset, so every motion has its terrain in the scene
     with open(os.path.join(MOTION_FOLDER, "metadata.yaml"), encoding="utf-8") as f:
         num_terrains = len(yaml.safe_load(f)["terrains"])
@@ -44,7 +45,10 @@ playmod.load_env_cfg = _patched_load
 if len(sys.argv) > 1:
     CKPT = sys.argv[1]
 else:
-    CKPT = max(glob.glob(f"{RUN_DIR}/model_*.pt"), key=lambda p: int(re.search(r"model_(\d+)", p).group(1)))
+    runs = sorted(glob.glob(RUNS_GLOB))
+    if not runs:
+        raise FileNotFoundError(f"No SuperMimic run matches {RUNS_GLOB}; pass a checkpoint path.")
+    CKPT = max(glob.glob(f"{runs[-1]}/model_*.pt"), key=lambda p: int(re.search(r"model_(\d+)", p).group(1)))
 print(f"[webplay] checkpoint: {CKPT}", flush=True)
 cfg = PlayConfig(viewer="viser", num_envs=1, checkpoint_file=CKPT)
 run_play("Instinct-Perceptive-Shadowing-G1-v0", cfg)

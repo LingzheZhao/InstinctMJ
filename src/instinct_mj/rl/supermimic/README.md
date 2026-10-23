@@ -131,7 +131,9 @@ console entry point in `pyproject.toml`; reinstall the package (`uv pip install 
 ### Train
 
 The dataset is the task's `MOTION_FOLDER` (`config/g1/perceptive_shadowing_cfg.py`; the folder holds the motion files and a
-`metadata.yaml`).
+`metadata.yaml`). The default, `~/Datasets/20251116_50cm_kneeClimbStep1`, is the dataset of the released policy: download
+`20251116_50cm_kneeClimbStep1.zip` from the [`supermimic-v0.1` release](https://github.com/project-instinct/InstinctMJ/releases/tag/supermimic-v0.1)
+and unzip it into `~/Datasets/`.
 
 ```bash
 instinct-train Instinct-Perceptive-Shadowing-G1-v0 --num-envs 1024 --agent.save-interval 1000 --agent.max-iterations 40000
@@ -150,7 +152,7 @@ When resuming a checkpoint that was saved before the failure head existed, add `
 ### Evaluate
 
 ```bash
-instinct-supermimic-eval --checkpoint <run>/model_12000.pt --motion-folder ~/Xyk/Datasets/20251116_50cm_kneeClimbStep1 --num-envs 128
+instinct-supermimic-eval --checkpoint <run>/model_12000.pt --motion-folder ~/Datasets/20251116_50cm_kneeClimbStep1 --num-envs 128
 instinct-supermimic-eval --run-dir <run> --watch --motion-folder ...          # evaluate every new checkpoint
 instinct-supermimic-eval --checkpoint ... --motion-folder ... --video-only    # one video per motion
 ```
@@ -165,7 +167,7 @@ python webplay_supermimic.py [<run>/model_<it>.pt]     # viser web viewer, defau
 
 The regular `instinct-play` on `Instinct-Perceptive-Shadowing-G1-Play-v0` loads the checkpoints through the same runner
 (`--viewer none --export-onnx True` writes `0-depth_image.onnx`, `actor.onnx` and `policy_normalizer.npz`; the Play config uses the
-same `MOTION_FOLDER` unless `MOTION_FOLDER_PLAY` is set).
+same `MOTION_FOLDER` unless `PLAY_MOTION_FOLDER_OVERRIDE` is set).
 
 ### Outputs
 

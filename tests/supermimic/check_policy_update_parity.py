@@ -23,7 +23,7 @@ cfg = load_instinct_rl_cfg(TASK_ID)
 cfg.device = "cuda:0"
 for k, v in dict(buffer_steps=120, warmup_steps=64, pi_batch=128, wm_batch=256, depth_windows=64, depth_pairs=64, fail_windows=64, wm_only_iters=0).items():
     setattr(cfg, k, v)
-env_cfg = build_env_cfg(TASK_ID, 32, "~/Xyk/Datasets/20251116_50cm_kneeClimbStep1")
+env_cfg = build_env_cfg(TASK_ID, 32, "~/Datasets/20251116_50cm_kneeClimbStep1")
 env_cfg.seed = 42
 vec = make_vec_env(TASK_ID, env_cfg, "cuda:0")
 runner = SuperMimicRunner(vec, cfg.to_dict(), log_dir=None, device="cuda:0")

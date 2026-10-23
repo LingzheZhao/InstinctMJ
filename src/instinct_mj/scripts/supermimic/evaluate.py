@@ -1,6 +1,6 @@
 """Evaluate ``OnPolicyRunner``-format checkpoints (``instinct-train`` runs of the task, ...) on the Play setting of the task.
 
-    instinct-supermimic-eval --checkpoint <run>/model_5000.pt --motion-folder ~/Xyk/Datasets/20251116_50cm_kneeClimbStep1
+    instinct-supermimic-eval --checkpoint <run>/model_5000.pt --motion-folder ~/Datasets/20251116_50cm_kneeClimbStep1
     instinct-supermimic-eval --run-dir <run> --every 5 --watch --motion-folder ...
 
 Setting: the task's Play env cfg (no domain randomization, no pushes, every episode starts at motion t=0, ``independent``

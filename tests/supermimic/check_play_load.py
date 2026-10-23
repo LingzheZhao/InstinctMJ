@@ -3,7 +3,7 @@
 
 The only patch is the dataset location of the Play env cfg (the task's default folder does not exist locally).
 
-    .venv/bin/python tests/supermimic/check_play_load.py <checkpoint.pt> --motion-folder ~/Xyk/Datasets/20251116_50cm_kneeClimbStep1
+    .venv/bin/python tests/supermimic/check_play_load.py <checkpoint.pt> --motion-folder ~/Datasets/20251116_50cm_kneeClimbStep1
 """
 
 from __future__ import annotations

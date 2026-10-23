@@ -38,7 +38,7 @@ for kv in args.set:
     k, v = kv.split("=")
     old = getattr(cfg, k)
     setattr(cfg, k, (v.lower() == "true") if isinstance(old, bool) else type(old)(v))
-env_cfg = build_env_cfg(TASK_ID, args.num_envs, "~/Xyk/Datasets/20251116_50cm_kneeClimbStep1")
+env_cfg = build_env_cfg(TASK_ID, args.num_envs, "~/Datasets/20251116_50cm_kneeClimbStep1")
 env_cfg.seed = 42  # as the training script (a random terrain grid can lack a terrain, see the note in the report)
 vec = make_vec_env(TASK_ID, env_cfg, "cuda:0")
 runner = SuperMimicRunner(vec, cfg.to_dict(), log_dir=None, device="cuda:0")

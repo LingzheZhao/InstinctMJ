@@ -6,7 +6,7 @@ heights of root / knees / ankles / wrists, contacts, and the world-model (1-step
 transitions. It also checks the reference itself against the terrain geometry (robot collision geoms placed in the reference
 pose, contacts against the terrain), and re-runs the pinned envs with the tracking terminations disabled.
 
-    .venv/bin/python tests/supermimic/diagnose_failure.py <run>/model_4000.pt --motion-folder ~/Xyk/Datasets/20251116_50cm_kneeClimbStep1
+    .venv/bin/python tests/supermimic/diagnose_failure.py <run>/model_4000.pt --motion-folder ~/Datasets/20251116_50cm_kneeClimbStep1
 Small GPU job (16 envs).
 """
 

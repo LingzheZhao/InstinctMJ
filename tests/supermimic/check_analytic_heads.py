@@ -7,7 +7,7 @@ terms (incl. terminal transitions), terminations (natural and forced on both sid
 perturbed states), goal / proprio observations, observation noise ranges and history ordering, applied torque, the
 terrain height scan, and that pre-reset terminal states differ from the reset state.
 
-    .venv/bin/python tests/supermimic/check_analytic_heads.py --motion-folder ~/Xyk/Datasets/20251116_50cm_kneeClimbStep1
+    .venv/bin/python tests/supermimic/check_analytic_heads.py --motion-folder ~/Datasets/20251116_50cm_kneeClimbStep1
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from instinct_mj.rl.supermimic.sim import SimReader, build_mdp, camera_context
 from instinct_mj.scripts.supermimic.common import TASK_ID, build_env_cfg, make_vec_env
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--motion-folder", default="~/Xyk/Datasets/20251116_50cm_kneeClimbStep1")
+parser.add_argument("--motion-folder", default="~/Datasets/20251116_50cm_kneeClimbStep1")
 parser.add_argument("--num-envs", type=int, default=16)
 parser.add_argument("--steps", type=int, default=120)
 parser.add_argument("--seed", type=int, default=0)

@@ -37,7 +37,10 @@ G1_CFG = G1_29DOF_TORSOBASE_POPSICLE_CFG
 
 # NOTE: Change this if your local perceptive shadowing dataset lives elsewhere.
 # The folder should contain the motion files and a `metadata.yaml`.
-MOTION_FOLDER = "~/Datasets/c167_self_collision_coupled_20260911"
+# The dataset used for the released SuperMimic policy is `20251116_50cm_kneeClimbStep1.zip` of the
+# `supermimic-v0.1` release (https://github.com/project-instinct/InstinctMJ/releases/tag/supermimic-v0.1);
+# unzip it into `~/Datasets/`.
+MOTION_FOLDER = "~/Datasets/20251116_50cm_kneeClimbStep1"
 
 # NOTE: Optional play override for perceptive shadowing.
 # Leave this as `None` to reuse `MOTION_FOLDER`, or set it to another local
