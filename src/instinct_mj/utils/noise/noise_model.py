@@ -95,8 +95,7 @@ def depth_contour_noise(
         > cfg.contour_threshold
     )
 
-    data = data.clone()
-    data[mask] = 0.0
+    data = torch.where(mask, torch.zeros_like(data), data)
 
     if len(original_shape) == 4 and original_shape[-1] == 1:
         data = data.permute(0, 2, 3, 1)
@@ -409,8 +408,7 @@ def _add_depth_artifacts(
     artifacts_right = _clip(artifacts_coord[:, 2] + artifacts_size[1] / 2, 1)
 
     env_ids = artifacts_coord[:, 0].long()
-    env_onehot = torch.zeros((len(artifacts_coord), n), device=device)
-    env_onehot[torch.arange(len(artifacts_coord)), env_ids] = 1.0
+    env_onehot = F.one_hot(env_ids, n).to(torch.float32)
 
     num_artifacts = len(artifacts_coord)
     tops_expanded = artifacts_top[:, None, None]
@@ -531,7 +529,7 @@ def range_based_gaussian_noise(
     return noisy_data
 
 
-def stereo_too_close_noise(
+def _stereo_too_close_noise_all(
     data: torch.Tensor,
     cfg: noise_cfg.StereoTooCloseNoiseCfg,
     env_ids: torch.Tensor | Sequence[int],
@@ -542,19 +540,17 @@ def stereo_too_close_noise(
     full_block_mask = vertical_block_mask & too_close_mask
     half_block_mask = (~vertical_block_mask) & too_close_mask
 
-    for pixel_value in random.sample(
-        cfg.full_block_values,
-        len(cfg.full_block_values),
-    ):
-        artifacts_buffer = torch.ones_like(data)
-        artifacts_buffer = _add_depth_artifacts(
-            artifacts_buffer,
-            cfg.full_block_artifacts_prob,
-            cfg.full_block_height_mean_std,
-            cfg.full_block_width_mean_std,
-            device=data.device,
-        )
-        data[full_block_mask] = ((1 - artifacts_buffer) * pixel_value)[full_block_mask]
+    # The original loops over a shuffled copy of ``full_block_values`` and overwrites ALL full-block pixels in every iteration, so
+    # only the last value (uniform over the values) and the last artifact buffer matter: draw just those.
+    pixel_value = random.choice(cfg.full_block_values)
+    artifacts_buffer = _add_depth_artifacts(
+        torch.ones_like(data),
+        cfg.full_block_artifacts_prob,
+        cfg.full_block_height_mean_std,
+        cfg.full_block_width_mean_std,
+        device=data.device,
+    )
+    data = torch.where(full_block_mask, (1 - artifacts_buffer) * pixel_value, data)
 
     half_block_spark = (
         _torch_rand_float(
@@ -565,8 +561,24 @@ def stereo_too_close_noise(
         ).view(n, h, w, 1)
         < cfg.half_block_spark_prob
     )
-    data[half_block_mask] = (half_block_spark.to(torch.float32) * cfg.half_block_value)[half_block_mask]
+    data = torch.where(half_block_mask, half_block_spark.to(torch.float32) * cfg.half_block_value, data)
 
+    return data
+
+
+def stereo_too_close_noise(
+    data: torch.Tensor,
+    cfg: noise_cfg.StereoTooCloseNoiseCfg,
+    env_ids: torch.Tensor | Sequence[int],
+) -> torch.Tensor:
+    """Per-image model that only changes images with pixels closer than ``cfg.close_threshold``; the artifact sampling is
+    expensive, so it only runs on those images (the others are returned untouched, which is what the model does to them)."""
+    close = (data < cfg.close_threshold).flatten(1).any(1).nonzero(as_tuple=False).squeeze(-1)
+    if len(close) == 0:
+        return data
+    if len(close) == data.shape[0]:
+        return _stereo_too_close_noise_all(data, cfg, env_ids)
+    data[close] = _stereo_too_close_noise_all(data[close], cfg, env_ids)
     return data
 
 
