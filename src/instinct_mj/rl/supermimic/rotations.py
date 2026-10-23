@@ -121,18 +121,6 @@ def mat_to_6d(R: torch.Tensor) -> torch.Tensor:
     return R[..., :, :2].reshape(R.shape[:-2] + (6,))
 
 
-def quat_slerp(q0: torch.Tensor, q1: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-    dot = (q0 * q1).sum(-1, keepdim=True)
-    q1 = torch.where(dot < 0, -q1, q1)
-    dot = dot.abs().clamp(max=1.0)
-    theta = torch.acos(dot)
-    s = torch.sin(theta)
-    t = t[..., None]
-    w0 = torch.where(s < 1e-6, 1 - t, torch.sin((1 - t) * theta) / (s + 1e-12))
-    w1 = torch.where(s < 1e-6, t, torch.sin(t * theta) / (s + 1e-12))
-    return F.normalize(w0 * q0 + w1 * q1, dim=-1)
-
-
 def tan_norm_from_mat(R: torch.Tensor) -> torch.Tensor:
     """Tangent / normal representation of the task (``instinct_mj.utils.math.quat_to_tan_norm``): ``[R x_hat, R z_hat]``."""
     return torch.cat((R[..., :, 0], R[..., :, 2]), -1)

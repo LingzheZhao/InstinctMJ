@@ -20,9 +20,9 @@ import mujoco
 import numpy as np
 import torch
 
-from instinct_mj.rl.supermimic.mdp import CAMERA_CTX_DIM, DEPTH_SHAPE, GOAL_POS_NOISE, GOAL_ROT_NOISE, PROPRIO_NOISE
 from instinct_mj.rl.supermimic.depth import DepthPipeline
-from instinct_mj.rl.supermimic.rotations import quat_to_mat, rot_angle_sq, so3_exp, yaw_mat
+from instinct_mj.rl.supermimic.mdp import CAMERA_CTX_DIM, DEPTH_SHAPE, GOAL_POS_NOISE, GOAL_ROT_NOISE, PROPRIO_NOISE
+from instinct_mj.rl.supermimic.rotations import quat_to_mat, so3_exp, yaw_mat
 from instinct_mj.rl.supermimic.sim import SimReader, build_mdp, camera_context
 from instinct_mj.scripts.supermimic.train import TASK_ID, build_env_cfg, make_vec_env
 
@@ -97,7 +97,7 @@ ref_off, ref_dir = GridPatternCfg(resolution=0.1, size=(1.6, 1.0)).generate_rays
 log("scan pattern offsets vs mjlab GridPatternCfg", ref_off[:, :2] - scanner.offsets, 0.0, 0.0)
 fail_if(not (scanner.num_rays == ref_off.shape[0] == 187), "height scan is not 187 rays")
 terms_cfg = env.cfg.observations["policy"].terms
-for name, idx, mine in zip(("projected_gravity", "base_ang_vel", "joint_pos", "joint_vel", "last_action"), range(5), PROPRIO_NOISE):
+for name, mine in zip(("projected_gravity", "base_ang_vel", "joint_pos", "joint_vel", "last_action"), PROPRIO_NOISE):
     n = terms_cfg[name].noise
     env_range = 0.0 if n is None else float(n.n_max)
     fail_if(n is not None and float(n.n_min) != -float(n.n_max), f"asymmetric noise in {name}")

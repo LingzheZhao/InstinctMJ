@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import torch
 import torch.nn.functional as F
 
-from instinct_mj.rl.supermimic.depth import FAR_METERS, DepthPipeline
+from instinct_mj.rl.supermimic.depth import DepthPipeline
 from instinct_mj.utils.noise import (
     CropAndResizeCfg,
     DepthArtifactNoiseCfg,

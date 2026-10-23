@@ -82,7 +82,6 @@ class WorldModel(nn.Module):
 
     def __init__(self, scan_dim: int, num_contact: int, xi_dim: int, hidden=(2048, 2048, 2048)):
         super().__init__()
-        self.num_contact = num_contact
         self.in_dim = INV_DIM + NUM_J + xi_dim + scan_dim
         self.net = mlp(self.in_dim, list(hidden), WM_OUT + num_contact, act=nn.SiLU, layer_norm=True)
         nn.init.zeros_(self.net[-1].weight)

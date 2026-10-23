@@ -91,7 +91,7 @@ def rollout(max_steps: int, record: bool):
     obs, _ = vec.get_observations()
     active = torch.ones(N, dtype=torch.bool, device=dev)
     log = {k: [] for k in ["S", "S1", "a", "valid", "t_ref", "frame", "z_robot", "z_ref", "link_err", "base_err", "joint_err", "flags", "contact", "depth_anchor", "depth_clean1", "origin", "ref_pos"]}
-    for step in range(max_steps):
+    for _ in range(max_steps):
         S = flatten_state(reader.state())
         f, phase, origin = motion.current_frame()
         anchor = obs[:, dsl].view(N, 1, 18, 32).clone()
@@ -227,7 +227,6 @@ def imagination_vs_real(starts=(60, 80, 100, 110, 120, 140), H=32, real_depth=Fa
     f_end = motion.clip_end[clip]
     phase = torch.zeros(len(rows), device=dev)
     origin = log["origin"].to(dev)[ts, es]
-    a_prev = log["a"].to(dev)[(ts - 1).clamp(min=0), es] * (ts > 0)[:, None]
     # proprio history from the logged states / actions (oldest first)
     hist = []
     for k in range(7, -1, -1):
@@ -393,6 +392,7 @@ torch.save({k: v for k, v in log.items() if k in ("t_ref", "z_robot", "z_ref", "
 
 # ---- plot ----
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 

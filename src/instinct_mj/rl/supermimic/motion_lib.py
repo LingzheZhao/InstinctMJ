@@ -25,7 +25,7 @@ class MotionLib:
         self.manager, self.buffer, self.device = manager, buf, device
         seq = buf._all_motion_sequences
         cat = lambda a: getattr(seq, a).concatenated_tensor.to(device)  # noqa: E731
-        self.root_p, self.root_v, self.root_w = cat("base_pos_w"), cat("base_lin_vel_w"), cat("base_ang_vel_w")
+        self.root_p, self.root_v = cat("base_pos_w"), cat("base_lin_vel_w")
         self.root_R = quat_to_mat(cat("base_quat_w"))
         self.q, self.qd = cat("joint_pos"), cat("joint_vel")
         self.link_p, self.link_v, self.link_w = cat("link_pos_w"), cat("link_lin_vel_w"), cat("link_ang_vel_w")

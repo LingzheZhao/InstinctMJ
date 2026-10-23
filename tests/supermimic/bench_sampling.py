@@ -47,7 +47,7 @@ lo, hi = buf.train_envs
 stats = {"old": [], "new": []}
 cells_old = torch.zeros(T - k + 1, hi - lo, device=dev)
 cells_new = torch.zeros_like(cells_old)
-for it in range(60):
+for _ in range(60):
     t0, env, w, fail_set = old_select(B, k, lo, hi, q, H)
     out = buf.sample_windows(B, k, buf.train_envs, q, H)
     in_old, in_new = fail_set[t0, env - lo], fail_set[out["age0"], out["env"] - lo]

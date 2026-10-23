@@ -8,7 +8,7 @@ task's; the reference's return-based reset-bin sampler is therefore NOT used). R
 the analytic heads of ``mdp.py``. The policy IS the task's own actor (``EncoderActorCritic`` with the Conv2d depth
 encoder, built by a stock ``instinct_rl`` ``OnPolicyRunner``) and acts on the task's ``policy`` observation group; in
 imagination that observation is assembled analytically (``MDP.policy_obs``) with the depth image rendered by the
-world model's ``DepthHead``.
+world model's ``DepthEnsemble``.
 """
 
 from __future__ import annotations
@@ -27,8 +27,8 @@ from tensorboardX import SummaryWriter
 
 from . import networks
 from .buffer import ReplayBuffer
-from .mdp import DEPTH_DIM, DEPTH_SHAPE, flatten_state, relative_root_pose, unflatten_state
 from .depth import DepthPipeline
+from .mdp import DEPTH_DIM, DEPTH_SHAPE, flatten_state, relative_root_pose, unflatten_state
 from .networks import Critic, DepthEnsemble, FailureHead, WorldModel
 from .sim import SimReader, build_mdp, camera_context
 
@@ -102,7 +102,7 @@ class SuperMimicRunner:
 
     # ------------------------------------------------------------------------------------------------
     def _build_fns(self):
-        mdp, wm, depth_head, critic = self.mdp, self.wm, self.depth_head, self.critic
+        mdp, wm = self.mdp, self.wm
         k = self.cfg["wm_window"]
 
         def _wm_rollout(s, a, xi_n):
@@ -224,6 +224,7 @@ class SuperMimicRunner:
                 stats["done"].append(done.float().sum())
 
     def wm_update(self):
+        """One world-model gradient step on a k-step window batch (dynamics, contact, depth and failure losses)."""
         c = self.cfg
         w = self.buffer.sample_windows(c["wm_batch"], c["wm_window"], self.buffer.train_envs, c["wm_failure_frac"], c["wm_failure_horizon"])
         env_idx = w["env"]
@@ -383,7 +384,7 @@ class SuperMimicRunner:
         return self.buffer.starts_at(pick[:, 0], pick[:, 1], self.hist)
 
     def _imagine(self, s: dict, h: dict) -> dict:
-        """HZ-step imagination of the policy from buffer start states ``s`` / histories ``h`` (WM + depth ensemble member per
+        """H-step imagination of the policy from buffer start states ``s`` / histories ``h`` (WM + depth ensemble member per
         rollout + camera noise). Gradients flow as in ``policy_update`` (call under ``no_grad`` for diagnostics)."""
         c, mdp, dev = self.cfg, self.mdp, self.device
         B, HZ = s["f"].shape[0], self.horizon
@@ -417,6 +418,7 @@ class SuperMimicRunner:
         return {"S0": S0, "f0": f0, "S": S, "f": f, "phase": phase, "origin": origin, "xi": xi, "xi_n": xi_n, "Ss": Ss, "As": As, "Aps": Aps, "Fs": Fs, "Ls": Ls}
 
     def policy_update(self):
+        """One policy step: H-step imagination from buffer states, BPTT of the discounted return, then GAE critic fit."""
         c, mdp, dev = self.cfg, self.mdp, self.device
         B, HZ = c["pi_batch"], self.horizon
         s, h = self.sample_valid_starts(B)

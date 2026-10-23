@@ -11,8 +11,8 @@ os.environ.setdefault("MUJOCO_GL", "egl")
 
 import yaml
 
-import instinct_mj.tasks  # noqa: F401  (register tasks)
 import instinct_mj.scripts.instinct_rl.play as playmod
+import instinct_mj.tasks  # noqa: F401  (register tasks)
 from instinct_mj.scripts.instinct_rl.play import PlayConfig, run_play
 from instinct_mj.scripts.supermimic.train import _enable_depth_noise, apply_motion_folder
 

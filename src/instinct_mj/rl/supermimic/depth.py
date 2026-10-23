@@ -19,7 +19,6 @@ from instinct_mj.utils.noise import (
     RangeBasedGaussianNoiseCfg,
 )
 
-
 FAR_METERS = 1.0e6  # the camera's ``max_distance`` (misses / far pixels) in the raw image
 
 

@@ -13,7 +13,6 @@ import os
 
 import torch
 
-from instinct_mj.rl import supermimic
 from instinct_mj.rl.supermimic import networks
 from instinct_mj.rl.supermimic.config import SuperMimicRunnerCfg
 from instinct_mj.rl.supermimic.runner import SuperMimicRunner
@@ -81,6 +80,7 @@ for variant, tol in (
     if rel > tol or abs(out[1] - ref[1]) > tol * max(1.0, abs(ref[1])):
         failed.append(out[0])
 print("--- reduced-precision variants (informational; not exact by construction) ---")
+amp_eager = None
 for variant in (
     dict(label="TF32 matmuls (training default), eager", compiled=False, tf32=True),
     dict(label="bf16 autocast of the policy net, eager", compiled=False, autocast=True),
@@ -88,12 +88,9 @@ for variant in (
     dict(label="  same, compiled", compiled=True, amp=torch.bfloat16),
 ):
     out = run(**variant)
-    ref_amp = ref if variant.get("amp") is None else None
-    if variant.get("amp") is not None and variant["compiled"]:
-        ref_amp = amp_eager
+    ref_amp = amp_eager if variant.get("amp") is not None and variant["compiled"] else ref
     if variant.get("amp") is not None and not variant["compiled"]:
         amp_eager = out
-        ref_amp = ref
     print(f"{out[0]:58s}: loss diff vs {'fp32 eager' if ref_amp is ref else 'amp eager'} {abs(out[1] - ref_amp[1]):.2e}, grad max rel diff {float((out[2] - ref_amp[2]).abs().max() / ref_amp[2].abs().max()):.2e}")
 vec.close()
 assert not failed, f"parity failed: {failed}"

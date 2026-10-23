@@ -23,7 +23,6 @@ from .terrain import HeightScanner
 
 NUM_J = 29
 STATE_DIM = 3 + 4 + 3 + 3 + NUM_J + NUM_J
-PROPRIO_DIM = 3 + 3 + NUM_J + NUM_J + NUM_J  # projected_gravity, base_ang_vel, joint_pos, joint_vel, last_action
 # sensor noise of the task's ``policy`` group (uniform half-widths) / goal noise (position_ref, rotation_ref)
 PROPRIO_NOISE = (0.05, 0.2, 0.01, 0.5, 0.0)
 GOAL_POS_NOISE, GOAL_ROT_NOISE = 0.25, 0.05
