@@ -1542,6 +1542,35 @@ def stl_heightfield_terrain(
     return TerrainOutput(origin=origin, geometries=[hfield_geom])
 
 
+def _primitive_motion_matched_terrain(cfg, record, spec, terrain_idx):
+    """Explicit native plane/box geometry in the input origin frame; no mesh approximation."""
+    if not cfg.use_input_origin_frame or "terrain_file" in record:
+        raise ValueError("primitive terrain requires the input origin frame and no terrain_file")
+    entries = record["collision_primitives"]
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("collision_primitives requires a nonempty explicit geometry list")
+    geometries, names = [], set()
+    center = np.array([cfg.size[0]/2, cfg.size[1]/2, 0.], dtype=np.float64)
+    for entry in entries:
+        if (not isinstance(entry, dict) or set(entry) != {"name", "type", "size", "pos"}
+                or not isinstance(entry["name"], str) or not entry["name"] or entry["name"] in names
+                or entry["type"] not in ("plane", "box")):
+            raise ValueError("primitive geometry requires unique name, plane/box type, size and pos")
+        names.add(entry["name"])
+        size, pos = np.asarray(entry["size"], dtype=np.float64), np.asarray(entry["pos"], dtype=np.float64)
+        if (size.shape != (3,) or pos.shape != (3,) or not np.isfinite(size).all()
+                or not np.isfinite(pos).all() or np.any(size <= 0)):
+            raise ValueError("primitive geometry size and pos require finite three-vectors with positive sizes")
+        if entry["type"] == "plane" and any(geom.type == mujoco.mjtGeom.mjGEOM_PLANE
+                for geom in spec.body("terrain").geoms):
+            raise ValueError("primitive geometry cannot repeat an infinite plane across terrain tiles")
+        geom = spec.body("terrain").add_geom(name=f"motion_matched_t{terrain_idx}_{entry['name']}",
+            type=(mujoco.mjtGeom.mjGEOM_PLANE if entry["type"] == "plane" else mujoco.mjtGeom.mjGEOM_BOX),
+            size=size, pos=pos+center, group=2, contype=1, conaffinity=1)
+        geometries.append(TerrainGeometry(geom=geom))
+    return TerrainOutput(origin=center, geometries=geometries)
+
+
 def motion_matched_terrain(
     cfg: mesh_terrains_cfg.MotionMatchedTerrainCfg,
     difficulty: float,
@@ -1566,12 +1595,14 @@ def motion_matched_terrain(
     # Extract terrains and motions from the YAML data
     terrains = data["terrains"]  # order matters
 
-    if cfg.collision_coacd:
-        # Precompute missing CoACD caches once to better utilize multi-core CPU.
-        _prewarm_coacd_disk_cache(cfg, terrains)
-
     terrain_idx = int(np.clip(difficulty * len(terrains), 0, len(terrains) - 1))
     selected_terrain = terrains[terrain_idx]
+    if "collision_primitives" in selected_terrain:
+        return _primitive_motion_matched_terrain(cfg, selected_terrain, spec, terrain_idx)
+    if cfg.collision_coacd:
+        # Mesh rows retain the native approximation path. Explicit primitives
+        # are already physical geometry and must never enter its preprocessing.
+        _prewarm_coacd_disk_cache(cfg, [row for row in terrains if "collision_primitives" not in row])
 
     terrain_file = selected_terrain["terrain_file"]
     terrain_abspath = os.path.join(cfg.path, terrain_file)

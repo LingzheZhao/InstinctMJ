@@ -132,5 +132,15 @@ height grid as `heights[y,x]`, `origin=[x0,y0]`, meter resolution and a per-cell
 It uses native geometry raycasts, not a separate terrain model or hidden height-field arrays.
 Infinite planes require explicit finite XY bounds; a top-down grid does not represent overhangs.
 
+Motion-matched terrain metadata may describe exact native axis-aligned primitives instead of a mesh file:
+`collision_primitives` is a nonempty list of `{name, type, size, pos}` entries. Types are `plane` or `box`;
+`size` uses MuJoCo half-extents (plane dimensions are visual), and `pos` is in the input-origin frame.
+Names must be unique, sizes positive and all coordinates finite. This mode requires
+`use_input_origin_frame=True`, cannot also declare `terrain_file`, and bypasses mesh approximation/CoACD.
+An infinite plane may occur only once in the generated physical terrain, not once per tile.
+Tile placement and reference-origin matching still belong to the ordinary native terrain generator.
+Use primitive planes/boxes when those are the intended physical surfaces: a coarse decomposition of a wide,
+thin mesh can alter its collision surface. Verify compiled geometry, not just the source mesh or its rendering.
+
 Downstream production deployments may pin this fork with an external jointly resolved dependency lock;
 that deployment lock, not the donor's development `uv.lock`, controls the installed environment.
