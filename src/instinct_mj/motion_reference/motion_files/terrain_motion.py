@@ -62,18 +62,8 @@ class TerrainMotion(AmassMotion):
         )  # type: ignore
 
     def match_scene(self, scene: Scene) -> None:
-        terrain = scene.terrain
-        subterrain_specific_cfgs = scene.terrain.subterrain_specific_cfgs
-        terrain_id_to_origins = {int(t["terrain_id"]): [] for t in self.yaml_data["terrains"]}
-        # Collect all terrain origins in case some subterrains are from the same terrain_file.
-        for row_idx in range(terrain.terrain_origins.shape[0]):
-            for col_idx in range(terrain.terrain_origins.shape[1]):
-                subterrain_cfg = subterrain_specific_cfgs[row_idx * terrain.terrain_origins.shape[1] + col_idx]
-                difficulty = subterrain_cfg.difficulty
-                terrain_idx = int(
-                    min(max(difficulty * len(self.yaml_data["terrains"]), 0), len(self.yaml_data["terrains"]) - 1)
-                )
-                terrain_id_to_origins[terrain_idx].append(terrain.terrain_origins[row_idx, col_idx])
+        from instinct_mj.terrains.motion_matching import motion_matched_origins
+        terrain_id_to_origins = motion_matched_origins(scene, metadata_yaml=self.cfg.metadata_yaml)
 
         # Set the origins for each motion by _all_motion_terrain_ids.
         for terrain_id, origins in terrain_id_to_origins.items():
@@ -83,7 +73,7 @@ class TerrainMotion(AmassMotion):
                 print(f"Warning: Terrain {terrain_id} has no origins. Skipping.")
                 self._all_motion_num_selectable_origins[self._all_motion_terrain_ids == terrain_id] = 0
                 continue
-            stacked_origins = torch.stack(origins)  # (num_origins, 3)
+            stacked_origins = origins  # (num_origins, 3), owned lookup result
             if num_origins > self.cfg.max_origins_per_motion:
                 # sample the origins subset for each matched motion (num_motion_matched, cfg.max_origins_per_motion, 3)
                 sample_i = torch.randint(0, num_origins, (num_motion_matched, self.cfg.max_origins_per_motion))
