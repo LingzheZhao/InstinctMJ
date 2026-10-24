@@ -1564,7 +1564,8 @@ def _primitive_motion_matched_terrain(cfg, record, spec, terrain_idx):
         if entry["type"] == "plane" and any(geom.type == mujoco.mjtGeom.mjGEOM_PLANE
                 for geom in spec.body("terrain").geoms):
             raise ValueError("primitive geometry cannot repeat an infinite plane across terrain tiles")
-        geom = spec.body("terrain").add_geom(name=f"motion_matched_t{terrain_idx}_{entry['name']}",
+        serial = len(spec.body("terrain").geoms)
+        geom = spec.body("terrain").add_geom(name=f"motion_matched_t{terrain_idx}_{entry['name']}_{serial}",
             type=(mujoco.mjtGeom.mjGEOM_PLANE if entry["type"] == "plane" else mujoco.mjtGeom.mjGEOM_BOX),
             size=size, pos=pos+center, group=2, contype=1, conaffinity=1)
         geometries.append(TerrainGeometry(geom=geom))

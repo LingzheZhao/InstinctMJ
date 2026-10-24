@@ -58,6 +58,21 @@ def test_public_native_generator_preserves_the_input_origin_and_exact_surfaces(t
     assert not list(tmp_path.glob('.coacd_cache/*'))
 
 
+def test_repeated_box_only_tiles_keep_unique_native_geometry_names(tmp_path):
+    from instinct_mj.terrains.terrain_generator import FiledTerrainGenerator
+    from instinct_mj.terrains.terrain_generator_cfg import FiledTerrainGeneratorCfg
+    path=tmp_path/'terrain.yaml'
+    path.write_text(yaml.safe_dump(dict(terrains=[dict(terrain_id=10,collision_primitives=[
+        dict(name='box',type='box',size=[.2,.2,.075],pos=[0.,0.,.075])])])) )
+    sub=MotionMatchedTerrainCfg(metadata_yaml=str(path),path=str(tmp_path),use_input_origin_frame=True)
+    cfg=FiledTerrainGeneratorCfg(size=(4.,4.),num_rows=1,num_cols=2,border_width=0.,seed=7,sub_terrains={'motion_matched':sub})
+    generator=FiledTerrainGenerator(cfg,device='cpu');spec=mujoco.MjSpec();generator.compile(spec)
+    model=spec.compile();data=mujoco.MjData(model);mujoco.mj_forward(model,data)
+    names=[model.geom(i).name for i in range(model.ngeom)]
+    assert len(names)==len(set(names))==2
+    np.testing.assert_allclose(data.geom_xpos,[[0.,-2.,.075],[0.,2.,.075]],rtol=0,atol=1e-12)
+
+
 @pytest.mark.parametrize('mutate',[
     lambda rows:rows[0].update(size=[0.,8.,.1]),
     lambda rows:rows[0].update(pos=[0.,float('nan'),0.]),
