@@ -56,10 +56,16 @@ def main():
         'synthetic_default_pose':args.synthetic_default_pose,
         'num_envs':4, 'physics_dt':.005, 'decimation':4, 'controls':8,
         'episode_length_s':.06, 'seed':42, 'device':args.device,
-        'physics_callbacks':0, 'terminal_callbacks':0, 'callback_failures':[], 'skipped':[]}
+        'physics_callbacks':0, 'terminal_callbacks':0, 'observation_computations':0,
+        'automatic_reset_worlds':0, 'callback_failures':[], 'skipped':[]}
     env, wrapper = None, None
     try:
         env = load_env_cls(args.task)(cfg=cfg,device=args.device,render_mode=None)
+        native_compute = env.observation_manager.compute
+        def compute(*args, **kwargs):
+            result['observation_computations'] += 1
+            return native_compute(*args, **kwargs)
+        env.observation_manager.compute = compute
         def physical(native, dt):
             result['physics_callbacks'] += 1
             if dt != .005:
@@ -79,7 +85,8 @@ def main():
             repeated, _ = wrapper.get_observations()
             assert torch.equal(observation,repeated) and torch.equal(before,reference.elapsed_time)
             assert torch.equal(rng,rng_state())
-            wrapper.step(torch.zeros(env.num_envs,wrapper.num_actions,device=args.device))
+            _, _, done, _ = wrapper.step(torch.zeros(env.num_envs,wrapper.num_actions,device=args.device))
+            result['automatic_reset_worlds'] += int(done.count_nonzero())
         before = reference.elapsed_time
         cached, _ = wrapper.get_observations()
         cached = cached.clone()
@@ -90,6 +97,8 @@ def main():
         assert torch.equal(cached[keep],following[keep])
         assert result['physics_callbacks'] == result['controls']*cfg.decimation
         assert result['terminal_callbacks'] == result['controls']
+        assert result['observation_computations'] == result['controls'] + 2
+        assert result['automatic_reset_worlds'] > 0
         assert not result['callback_failures']
         result['pass'] = True
     except BaseException as error:

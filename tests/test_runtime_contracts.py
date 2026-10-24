@@ -114,6 +114,7 @@ def test_hooks_preserve_real_tick_count_and_endpoint_order_without_extra_sense()
     from instinct_mj.envs.runtime_hooks import RuntimeCallbacks
     events = []
     native = SimpleNamespace(runtime_callbacks=RuntimeCallbacks(), _inside_control_step=True,
+        observation_manager=SimpleNamespace(compute=lambda **kwargs: {}),
         scene=SimpleNamespace(update=lambda dt:events.append(('scene',dt))),
         sim=SimpleNamespace(forward=lambda:events.append('forward')),
         termination_manager=SimpleNamespace(compute=lambda:events.append('termination'),
@@ -191,3 +192,42 @@ def test_physical_state_refresh_does_not_reset_reference_or_advance_any_clock():
     assert actual['policy'].shape == (3,4)
     with pytest.raises(TypeError):
         actual['policy'] = torch.zeros(3,4)
+
+
+@pytest.mark.parametrize('concatenate', [False, True])
+def test_partial_reset_preserves_issued_noisy_observations_and_native_history(concatenate):
+    from mjlab.managers.observation_manager import ObservationManager, ObservationGroupCfg, ObservationTermCfg
+    from mjlab.utils.noise.noise_cfg import UniformNoiseCfg
+    from instinct_mj.envs.runtime_hooks import scope_reset_observation_cache
+    calls = []
+    def value(env):
+        calls.append(True)
+        return env.value
+    env = SimpleNamespace(num_envs=3, device='cpu', value=torch.zeros(3,2), obs_buf={})
+    group = ObservationGroupCfg(terms={
+        'plain':ObservationTermCfg(func=value, noise=UniformNoiseCfg(n_min=-1., n_max=1.)),
+        'history':ObservationTermCfg(func=value, history_length=3),
+    }, enable_corruption=True, concatenate_terms=concatenate)
+    env.observation_manager = ObservationManager({'policy':group}, env)
+    scope_reset_observation_cache(env)
+    env.obs_buf = env.observation_manager.compute(update_history=True)
+    def clone(tree):
+        return {k:clone(v) for k,v in tree.items()} if isinstance(tree,dict) else tree.clone()
+    previous = clone(env.obs_buf)
+    ids, keep = torch.tensor([1]), torch.tensor([0,2])
+    env.value[1] = 7.
+    env.observation_manager.reset(ids)
+    calls.clear()
+    env.obs_buf = env.observation_manager.compute(update_history=True, env_ids=ids)
+    assert len(calls) == 2  # exactly one native compute, one call per term
+    if concatenate:
+        torch.testing.assert_close(env.obs_buf['policy'][keep],previous['policy'][keep],rtol=0,atol=0)
+        assert bool((env.obs_buf['policy'][1,2:] == 7.).all())
+    else:
+        for name in ('plain','history'):
+            torch.testing.assert_close(env.obs_buf['policy'][name][keep],previous['policy'][name][keep],rtol=0,atol=0)
+        assert bool((env.obs_buf['policy']['history'][1] == 7.).all())
+    state = torch.get_rng_state()
+    assert env.observation_manager.compute() is env.obs_buf
+    assert env.observation_manager.compute(update_history=True,env_ids=torch.tensor([],dtype=torch.long)) is env.obs_buf
+    assert torch.equal(state,torch.get_rng_state()) and len(calls) == 2

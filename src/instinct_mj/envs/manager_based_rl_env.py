@@ -206,6 +206,8 @@ class InstinctRlEnv(ManagerBasedRlEnv):
         return self.runtime_callbacks.register(self.runtime_callbacks.terminal, callback)
 
     def _install_runtime_hooks(self):
+        from instinct_mj.envs.runtime_hooks import scope_reset_observation_cache
+        scope_reset_observation_cache(self)
         update_scene = self.scene.update
         def scene_update(dt):
             result = update_scene(dt)
