@@ -141,6 +141,57 @@ def test_reference_clock_read_is_nonadvancing_and_owned():
     torch.testing.assert_close(manager.elapsed_time,torch.tensor([.02,.1]))
 
 
+def test_passive_terminal_observer_cannot_change_physical_results_or_sampling_counts():
+    from instinct_mj.envs.manager_based_rl_env import InstinctRlEnv
+    from instinct_mj.envs.runtime_hooks import RuntimeCallbacks
+    def run(observed):
+        torch.manual_seed(19)
+        counts = dict(physics=0, forward=0, sense=0, observation=0, history=0)
+        state = SimpleNamespace(integrated=0., reached=0., reference_time=0.)
+        terminal = []
+        def forward():
+            counts['forward'] += 1
+            state.reached = state.integrated
+        def scene(dt):
+            state.reference_time += dt
+        def compute(**kwargs):
+            counts['observation'] += 1
+            counts['history'] += int(kwargs['update_history'])
+            return {'policy': torch.tensor([[state.reached]]) + torch.rand(1, 1)}
+        native = SimpleNamespace(runtime_callbacks=RuntimeCallbacks(), _inside_control_step=True,
+            observation_manager=SimpleNamespace(compute=compute), scene=SimpleNamespace(update=scene),
+            sim=SimpleNamespace(forward=forward), obs_buf={},
+            termination_manager=SimpleNamespace(compute=lambda: torch.tensor([state.reached >= 8.]),
+                terminated=torch.tensor([False]), time_outs=torch.tensor([False])))
+        native.runtime_callbacks.register(native.runtime_callbacks.physics,
+            lambda env,dt:counts.__setitem__('physics',counts['physics']+1))
+        if observed:
+            native.runtime_callbacks.register(native.runtime_callbacks.terminal,
+                lambda env,done,truncated:terminal.append(state.reached))
+        InstinctRlEnv._install_runtime_hooks(native)
+        results = []
+        for _ in range(3):
+            for _ in range(4):
+                # A split-step solver has integrated its qpos while the last
+                # forward-derived body reading is still stale until forward().
+                state.integrated += 1.
+                native.scene.update(.005)
+            done = native.termination_manager.compute()
+            reward = state.reached * .1
+            counts['sense'] += 1
+            native.obs_buf = native.observation_manager.compute(update_history=True)
+            results.append((done, reward, native.obs_buf['policy'].clone()))
+        return results, counts, state.reference_time, torch.get_rng_state(), terminal
+    plain, seen = run(False), run(True)
+    for left, right in zip(plain[0], seen[0], strict=True):
+        assert torch.equal(left[0], right[0]) and left[1] == right[1] and torch.equal(left[2], right[2])
+    assert [value[1] for value in plain[0]] == pytest.approx([.4, .8, 1.2])
+    assert plain[1] == seen[1] == dict(physics=12, forward=3, sense=3, observation=3, history=3)
+    assert plain[2] == seen[2] == pytest.approx(.06)
+    assert torch.equal(plain[3], seen[3])
+    assert seen[4] == [4., 8., 12.]
+
+
 def test_terrain_resampling_changes_start_time_with_motion_and_origin():
     from instinct_mj.motion_reference.motion_files.terrain_motion import TerrainMotion
     buffer = object.__new__(TerrainMotion)

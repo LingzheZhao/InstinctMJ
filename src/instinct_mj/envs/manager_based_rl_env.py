@@ -205,6 +205,11 @@ class InstinctRlEnv(ManagerBasedRlEnv):
         """
         return self.runtime_callbacks.register(self.runtime_callbacks.terminal, callback)
 
+    @property
+    def control_endpoint(self) -> str:
+        """Physical kinematics seen by every termination/reward, with or without observers."""
+        return "fresh_forward_before_termination_and_reward"
+
     def _install_runtime_hooks(self):
         from instinct_mj.envs.runtime_hooks import scope_reset_observation_cache
         scope_reset_observation_cache(self)
@@ -217,12 +222,12 @@ class InstinctRlEnv(ManagerBasedRlEnv):
         self.scene.update = scene_update
         compute_terminations = self.termination_manager.compute
         def terminal_compute():
-            if self.runtime_callbacks.terminal:
-                # mj_step integrates after its forward pass. Refresh endpoint
-                # kinematics before consumers measure the body, without stepping
-                # the reference sensor, camera noise or policy history.
-                self.sim.forward()
-                self.scene.update(dt=0.0)
+            # mj_step integrates after its forward pass. The environment owns
+            # this endpoint, even when no passive measurement is registered:
+            # termination and reward must see the same reached physical state.
+            # dt=0 does not advance reference/camera noise or policy history.
+            self.sim.forward()
+            self.scene.update(dt=0.0)
             result = compute_terminations()
             self.runtime_callbacks.terminal_step(self, self.termination_manager.terminated,
                                                   self.termination_manager.time_outs)
