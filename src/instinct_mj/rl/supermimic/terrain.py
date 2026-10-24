@@ -22,28 +22,44 @@ import torch.nn.functional as F
 
 from .rotations import mm, yaw_mat
 
-HEIGHTMAP_CACHE_VERSION = 2
+HEIGHTMAP_CACHE_VERSION = 3
 
 MISS_HEIGHT = -100.0
 """Ground height stored for cells without terrain (scan saturates at ``max_distance``)."""
 
 
-def build_heightmap(mj_model: mujoco.MjModel, resolution: float, terrain_body: str = "terrain") -> tuple[np.ndarray, float, float]:
+def build_heightmap(mj_model: mujoco.MjModel, resolution: float, terrain_body: str = "terrain",
+                    *, bounds: tuple[float, float, float, float] | None = None) -> tuple[np.ndarray, float, float]:
     """Return ``(heights[ny, nx], x0, y0)``; vertex (j, i) is at ``(x0 + i * resolution, y0 + j * resolution)``."""
+    if not np.isfinite(resolution) or resolution <= 0:
+        raise ValueError("heightmap resolution must be finite and positive")
     m = copy.deepcopy(mj_model)
     terrain_id = m.body(terrain_body).id
-    is_terrain = m.geom_bodyid == terrain_id
-    m.geom_group[~is_terrain] = 5  # only the terrain geoms are visible to the rays
+    bodies = {terrain_id}
+    for body in range(terrain_id+1,m.nbody):
+        if int(m.body_parentid[body]) in bodies:
+            bodies.add(body)
+    is_terrain = np.isin(m.geom_bodyid,list(bodies)) & ((m.geom_contype != 0) | (m.geom_conaffinity != 0))
+    if not is_terrain.any():
+        raise ValueError("heightmap requires actual collision terrain geometry")
+    if bounds is None and np.any(m.geom_type[is_terrain] == mujoco.mjtGeom.mjGEOM_PLANE):
+        raise ValueError("an infinite ground plane requires explicit finite heightmap bounds")
+    m.geom_group[:] = 5
+    m.geom_group[is_terrain] = 0  # physical terrain only, independent of rendering groups
     d = mujoco.MjData(m)
     mujoco.mj_forward(m, d)
     xpos, rbound = d.geom_xpos[is_terrain], m.geom_rbound[is_terrain]
     lo, hi = (xpos - rbound[:, None]).min(0), (xpos + rbound[:, None]).max(0)
+    if bounds is not None:
+        if len(bounds) != 4 or not np.isfinite(bounds).all() or bounds[0] >= bounds[1] or bounds[2] >= bounds[3]:
+            raise ValueError("heightmap bounds must be finite xmin < xmax, ymin < ymax")
+        lo[:2], hi[:2] = [bounds[0],bounds[2]], [bounds[1],bounds[3]]
     x0, y0 = np.floor(lo[:2] / resolution) * resolution
-    nx = int(np.ceil((hi[0] - x0) / resolution)) + 1
-    ny = int(np.ceil((hi[1] - y0) / resolution)) + 1
+    nx = max(2,int(np.ceil((hi[0] - x0) / resolution)) + 1)
+    ny = max(2,int(np.ceil((hi[1] - y0) / resolution)) + 1)
     z_top = float(hi[2]) + 1.0
     geomgroup = np.zeros(6, dtype=np.uint8)
-    geomgroup[int(m.geom_group[is_terrain][0])] = 1
+    geomgroup[0] = 1
     heights = np.full((ny, nx), MISS_HEIGHT, dtype=np.float32)
     vec = np.array([0.0, 0.0, -1.0])
 

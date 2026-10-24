@@ -12,7 +12,6 @@ import instinct_mj.tasks  # noqa: F401
 from instinct_mj.tasks.registry import load_env_cfg, load_env_cls, load_vecenv_cls
 from instinct_mj.tasks.shadowing.perceptive.config.g1.perceptive_shadowing_cfg import (
     TerrainMotionCfg,
-    _maybe_disable_single_motion_binning,
 )
 from instinct_mj.tasks.shadowing.perceptive.perceptive_env_cfg import make_curriculum, make_events
 
@@ -43,9 +42,6 @@ def apply_motion_folder(cfg, motion_folder: str | None, restore_baseline_samplin
     motion_buffer.env_starting_stub_sampling_strategy = baseline.env_starting_stub_sampling_strategy
     cfg.curriculum["beyond_adaptive_sampling"] = make_curriculum()["beyond_adaptive_sampling"]
     cfg.events["bin_fail_counter_smoothing"] = make_events()["bin_fail_counter_smoothing"]
-    if _maybe_disable_single_motion_binning(motion_buffer):
-        cfg.curriculum["beyond_adaptive_sampling"] = None
-        cfg.events["bin_fail_counter_smoothing"] = None
 
 
 def build_env_cfg(task: str, num_envs: int, motion_folder: str | None):
@@ -54,10 +50,8 @@ def build_env_cfg(task: str, num_envs: int, motion_folder: str | None):
     cfg = load_env_cfg(task)
     cfg.scene.num_envs = num_envs
     apply_motion_folder(cfg, motion_folder)
-    # NOTE: the task's ``height_scanner`` / critic ``height_scan`` stay in the env although the observation is constant
-    # (the sensor only includes geom group 0, which is empty; a task bug, not fixed here): removing the critic term
-    # would change the critic input size of the ``EncoderActorCritic`` and break ``runner.load`` in Play. The world
-    # model / critic use the analytic heightmap scan instead.
+    # The task keeps its native height scanner; physical terrain collision geoms
+    # are assigned to its selected group by the scene specification editor.
     return cfg
 
 

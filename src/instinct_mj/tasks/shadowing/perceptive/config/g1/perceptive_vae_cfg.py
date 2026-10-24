@@ -39,10 +39,7 @@ PROPRIO_HISTORY_LENGTH = 8
 
 # NOTE: Change this to your local perceptive VAE dataset folder.
 # The folder should contain the motion files and a `metadata.yaml`.
-MOTION_FOLDER = (
-    "~/Xyk/Datasets/20260317_50cm_kneeClimbStep1_projectInstinct"
-    # "~/Xyk/Datasets/20260317_50cm_kneeClimbStep1_projectInstinct/20251106_diveroll4_roadRamp_noWall"
-)
+MOTION_FOLDER = ""
 
 # NOTE: Temporary local play override for perceptive VAE.
 # Leave this as `None` to reuse `MOTION_FOLDER`, or set it to another local

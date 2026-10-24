@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import torch
 from instinct_rl.env import VecEnv
 from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
@@ -16,7 +17,15 @@ class InstinctRlVecEnvWrapper(VecEnv):
         *,
         policy_group: str = "policy",
         critic_group: str | None = "critic",
+        reset_on_init: bool = True,
+        clip_actions: float | None = None,
     ):
+        if clip_actions is not None and (type(clip_actions) not in (int, float)
+                or not math.isfinite(clip_actions) or clip_actions <= 0):
+            raise ValueError("clip_actions must be positive and finite, or None")
+        self.clip_actions = clip_actions
+        self._depth_pipeline = None
+        self._cached_packed_observations = None
         self.env = env
         self.policy_group = policy_group
         self.critic_group = critic_group
@@ -39,8 +48,12 @@ class InstinctRlVecEnvWrapper(VecEnv):
         self.num_obs = self._group_flat_dim(self.policy_group)
         self.num_critic_obs = self._group_flat_dim(self.critic_group) if self.critic_group is not None else None
 
-        # Reset once because instinct_rl runner does not call reset before rollout.
-        self.env.reset()
+        # Exactly one startup-reset owner. Existing runners use the default;
+        # native callers that already reset the env explicitly opt out.
+        if reset_on_init:
+            self.reset()
+        elif self.unwrapped.obs_buf:
+            self._cached_packed_observations = self._pack_observations(self.unwrapped.obs_buf)
 
     @property
     def cfg(self) -> ManagerBasedRlEnvCfg:
@@ -116,13 +129,14 @@ class InstinctRlVecEnvWrapper(VecEnv):
         return obs_format
 
     def get_observations(self) -> tuple[torch.Tensor, dict]:
-        obs_dict = self.unwrapped.observation_manager.compute()
-        packed_obs = self._pack_observations(obs_dict)
+        if self._cached_packed_observations is None:
+            raise RuntimeError("Reset the environment before reading cached observations")
+        packed_obs = self._cached_packed_observations
         return packed_obs["policy"], {"observations": packed_obs}
 
-    def reset(self) -> tuple[torch.Tensor, dict]:
-        obs_dict, extras = self.env.reset()
-        packed_obs = self._pack_observations(obs_dict)
+    def reset(self, **kwargs) -> tuple[torch.Tensor, dict]:
+        obs_dict, extras = self.env.reset(**kwargs)
+        packed_obs = self._cached_packed_observations = self._pack_observations(obs_dict)
         extras = dict(extras)
         self._stabilize_log(extras)
         extras.setdefault("step", {})
@@ -131,8 +145,10 @@ class InstinctRlVecEnvWrapper(VecEnv):
         return packed_obs["policy"], extras
 
     def step(self, actions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]:
+        if self.clip_actions is not None:
+            actions = actions.clamp(-self.clip_actions, self.clip_actions)
         obs_dict, rewards, terminated, truncated, extras = self.env.step(actions)
-        packed_obs = self._pack_observations(obs_dict)
+        packed_obs = self._cached_packed_observations = self._pack_observations(obs_dict)
         dones = (terminated | truncated).to(dtype=torch.long)
 
         extras = dict(extras)
@@ -149,6 +165,28 @@ class InstinctRlVecEnvWrapper(VecEnv):
         if rewards.ndim == 1:
             rewards = rewards.unsqueeze(1)
         return packed_obs["policy"], rewards, dones, extras
+
+    def refresh_observations_after_state_write(self, *, env_ids=None):
+        obs = self.unwrapped.refresh_observations_after_state_write(env_ids=env_ids)
+        self._cached_packed_observations = self._pack_observations(obs)
+        return self.get_observations()
+
+    def processed_depth(self, *, noisy: bool = True) -> torch.Tensor:
+        """Owned latest (N,1,H,W) processed depth, without sense/observation updates.
+
+        Clean depth uses the donor's deterministic normalization/crop pipeline;
+        noisy depth reads the image already produced by the native camera. The
+        returned copy cannot mutate the sensor's noise/history buffers.
+        """
+        if self._cached_packed_observations is None:
+            raise RuntimeError("Reset before reading processed depth")
+        if self._depth_pipeline is None:
+            from instinct_mj.rl.supermimic.depth import DepthPipeline
+            self._depth_pipeline = DepthPipeline(self.unwrapped)
+        if noisy:
+            image = self.unwrapped.scene["camera"].data.output["distance_to_image_plane_noised"]
+            return image.permute(0,3,1,2).clone()
+        return self._depth_pipeline.clean_from_sensor().clone()
 
     def close(self) -> None:
         self.env.close()

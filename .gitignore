@@ -22,7 +22,11 @@ instinct_mj.egg-info/
 venv/
 .vscode/
 .pytest_cache/
-/tests/
+/tests/*
+!/tests/test_runtime_contracts.py
+!/tests/native/
+/tests/native/*
+!/tests/native/check_runtime_callbacks.py
 # Python cache files
 __pycache__/
 *.pyc

@@ -131,6 +131,11 @@ def _edit_perceptive_scene_spec(spec: mujoco.MjSpec) -> None:
         light.diffuse[:] = (0.24, 0.24, 0.24)
         light.specular[:] = (0.0, 0.0, 0.0)
     for geom in terrain_body.geoms:
+        # Height rays select group 0. Keep the physical terrain in that group,
+        # independently of CoACD's rendered/collision-hull representation.
+        # Robot geometry retains its own groups and is not included in the scan.
+        if geom.contype or geom.conaffinity:
+            geom.group = 0
         geom.material = ground_material_name
         geom.rgba[:] = (ground_rgb1[0], ground_rgb1[1], ground_rgb1[2], 1.0)
 

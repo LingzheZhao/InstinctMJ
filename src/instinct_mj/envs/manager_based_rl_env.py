@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from types import MappingProxyType
 
 import torch
 from mjlab.envs import ManagerBasedRlEnv
@@ -26,6 +27,9 @@ class InstinctRlEnv(ManagerBasedRlEnv):
         **kwargs,
     ) -> None:
         del kwargs  # Unused.
+        from instinct_mj.envs.runtime_hooks import RuntimeCallbacks
+        self.runtime_callbacks = RuntimeCallbacks()
+        self._inside_control_step = False
         self.cfg = cfg
         if self.cfg.seed is not None:
             self.cfg.seed = self.seed(self.cfg.seed)
@@ -89,6 +93,7 @@ class InstinctRlEnv(ManagerBasedRlEnv):
 
         self.load_managers()
         self.setup_manager_visualizers()
+        self._install_runtime_hooks()
 
     def load_managers(self) -> None:
         """Extend mjlab manager loading with InstinctLab multi-reward routing."""
@@ -115,11 +120,112 @@ class InstinctRlEnv(ManagerBasedRlEnv):
         self.manager_visualizers["monitor_manager"] = self.monitor_manager
 
     def step(self, action: torch.Tensor):
-        obs, reward, terminated, truncated, extras = super().step(action)
+        self._inside_control_step = True
+        try:
+            obs, reward, terminated, truncated, extras = super().step(action)
+        finally:
+            self._inside_control_step = False
         monitor_infos = self.monitor_manager.update(dt=self.step_dt)
         extras.setdefault("step", {})
         extras["step"].update(monitor_infos)
         return obs, reward, terminated, truncated, extras
+
+    @property
+    def cached_observations(self):
+        """Observations last produced by reset/step; callers must not mutate tensors."""
+        if not self.obs_buf:
+            raise RuntimeError("Reset the environment before reading cached observations")
+        return MappingProxyType(self.obs_buf)
+
+    def get_observations(self):
+        """Read cached observations without another noise sample/history advance."""
+        return self.cached_observations
+
+    def refresh_observations_after_state_write(self, *, env_ids=None):
+        """Refresh an explicitly written physical state without reference reset/advance.
+
+        Physical sensors and observation histories restart only for selected
+        worlds. MotionReferenceManager's assignments, timestamps and sampler are
+        deliberately untouched. This owns the forward/sense and observation
+        reset/compute; callers must not repeat those operations around it.
+        """
+        from instinct_mj.motion_reference.motion_reference_manager import MotionReferenceManager
+        ids = (torch.arange(self.num_envs, device=self.device, dtype=torch.long) if env_ids is None
+               else torch.as_tensor(env_ids, device=self.device, dtype=torch.long).reshape(-1))
+        for sensor in self.scene.sensors.values():
+            if not isinstance(sensor, MotionReferenceManager):
+                sensor.reset(ids)
+        self.sim.forward()
+        self.sim.sense()
+        self.observation_manager.reset(ids)
+        self.obs_buf = self.observation_manager.compute(update_history=True, env_ids=ids)
+        return self.cached_observations
+
+    @property
+    def terrain_placement(self):
+        """Actual scene origins in world meters, copied from the owned native terrain."""
+        terrain = self.scene.terrain
+        if terrain is None:
+            raise ValueError("This environment has no terrain")
+        return {name:None if getattr(terrain,name) is None else getattr(terrain,name).clone()
+                for name in ("env_origins","terrain_origins")}
+
+    def terrain_heightmap(self, *, resolution, bounds=None):
+        """Raycast the compiled physical terrain into an owned world-meter height grid.
+
+        Output ``heights[y,x]`` and ``origin=[world_x0,world_y0]`` describe cells
+        spaced by ``resolution`` meters; ``valid`` marks rays that found terrain.
+        Infinite planes require explicit finite world-XY bounds. This top-down
+        representation cannot describe overhangs. No content hash/disk cache,
+        second physical terrain, reference advance or simulation step is used.
+        """
+        from instinct_mj.rl.supermimic.terrain import build_heightmap, MISS_HEIGHT
+        heights,x0,y0 = build_heightmap(self.sim.mj_model,resolution,bounds=bounds)
+        value = torch.as_tensor(heights,device=self.device,dtype=torch.float32)
+        return {"heights":value,"origin":value.new_tensor([x0,y0]),"resolution":float(resolution),
+                "valid":value != MISS_HEIGHT,"axes":"y,x","units":"m"}
+
+    def add_physics_step_callback(self, callback):
+        """Register ``callback(env, physics_dt)`` after each actual scene update.
+
+        Native solver contacts/capacity counters and lazy sensor measurements can
+        be read here. No control/reference step or noise computation is added.
+        Returns an idempotent unregister callable.
+        """
+        return self.runtime_callbacks.register(self.runtime_callbacks.physics, callback)
+
+    def add_terminal_callback(self, callback):
+        """Register ``callback(env, terminated, truncated)`` before reward/reset.
+
+        Runs every control after refreshed endpoint kinematics and termination
+        evaluation, before rewards, interval events and automatic resets. Camera
+        sensing remains at its native post-step phase: for terminal depth use
+        ``auto_reset=False``, read step's cache, then explicitly reset done worlds.
+        Callback consumers must clone any state they retain across a reset.
+        """
+        return self.runtime_callbacks.register(self.runtime_callbacks.terminal, callback)
+
+    def _install_runtime_hooks(self):
+        update_scene = self.scene.update
+        def scene_update(dt):
+            result = update_scene(dt)
+            if self._inside_control_step and dt > 0:
+                self.runtime_callbacks.physics_step(self, dt)
+            return result
+        self.scene.update = scene_update
+        compute_terminations = self.termination_manager.compute
+        def terminal_compute():
+            if self.runtime_callbacks.terminal:
+                # mj_step integrates after its forward pass. Refresh endpoint
+                # kinematics before consumers measure the body, without stepping
+                # the reference sensor, camera noise or policy history.
+                self.sim.forward()
+                self.scene.update(dt=0.0)
+            result = compute_terminations()
+            self.runtime_callbacks.terminal_step(self, self.termination_manager.terminated,
+                                                  self.termination_manager.time_outs)
+            return result
+        self.termination_manager.compute = terminal_compute
 
     def update_visualizers(self, visualizer: DebugVisualizer) -> None:
         super().update_visualizers(visualizer)

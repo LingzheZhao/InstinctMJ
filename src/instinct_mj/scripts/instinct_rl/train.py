@@ -44,6 +44,8 @@ class TrainConfig:
     env: ManagerBasedRlEnvCfg
     agent: InstinctRlOnPolicyRunnerCfg
     num_envs: int | None = None
+    motion_folder: str | None = None
+    terrain_metadata: str | None = None
     device: str | None = None
     video: bool = False
     video_length: int = 200
@@ -110,6 +112,9 @@ def _resolve_distributed_runtime(
 
 def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
     log_dir = log_dir.expanduser().resolve()
+    if cfg.motion_folder is not None:
+        from instinct_mj.tasks.shadowing.factory import configure_shadowing_env_cfg
+        configure_shadowing_env_cfg(cfg.env, motion_folder=cfg.motion_folder, terrain_metadata=cfg.terrain_metadata)
 
     vecenv_cls = load_vecenv_cls(task_id)
     if vecenv_cls is None:

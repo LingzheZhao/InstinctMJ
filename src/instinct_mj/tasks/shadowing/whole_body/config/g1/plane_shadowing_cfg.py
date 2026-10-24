@@ -10,7 +10,6 @@ from copy import deepcopy
 
 import mjlab.envs.mdp as mdp
 import mujoco
-import yaml
 from mjlab.managers import (
     CurriculumTermCfg,
     EventTermCfg,
@@ -29,7 +28,7 @@ from mjlab.viewer.viewer_config import ViewerConfig
 
 import instinct_mj.envs.mdp as instinct_mdp
 import instinct_mj.tasks.shadowing.whole_body.shadowing_env_cfg as shadowing_cfg
-from instinct_mj.assets.unitree_g1 import G1_29DOF_TORSOBASE_POPSICLE_CFG, beyondmimic_action_scale
+from instinct_mj.assets.unitree_g1 import G1_29DOF_TORSOBASE_POPSICLE_CFG, G1_MJCF_PATH, beyondmimic_action_scale
 from instinct_mj.managers import MultiRewardCfg
 from instinct_mj.monitors import (
     MonitorTermCfg,
@@ -109,88 +108,12 @@ def _edit_shadowing_scene_spec(spec: mujoco.MjSpec) -> None:
         geom.material = ground_material_name
 
 
-# MOTION_NAME = "AccadRun" # success
-# _hacked_selected_file_ = "ACCAD/Male2Running_c3d/C5 - walk to run_retargeted.npz"
-
-# MOTION_NAME = "AccadMartialBounce"
-# _hacked_selected_file_ = "ACCAD/MartialArtsWalksTurns_c3d/E8 - bounce_retargeted.npz"
-# MOTION_NAME = "KitStomp"
-# _hacked_selected_file_ = "KIT/3/stomp_left03_retargeted.npz"
-
-# MOTION_NAME = "AccadMartialSpin"
-# _hacked_selected_file_ = "ACCAD/Male2MartialArtsKicks_c3d/G20_-__reverse_spin_cresent_right_retargeted.npz"
-# MOTION_NAME = "KitStretch"  # requires balancing
-# _hacked_selected_file_ = "KIT/3/streching_leg01_retargeted.npz"
-
-MOTION_NAME = "LafanKungfu1"
-_hacked_selected_files_ = ["fightAndSports1_subject1_retargeted.npz"]
-# MOTION_NAME = "LafanSprint1"
-# _hacked_selected_files_ = ["sprint1_subject2_retargeted.npz"]
-
-# MOTION_NAME = "test"
-# _hacked_selected_files_ = ["CMU/90/90_26_retargeted.npz"]
-
-# NOTE: Change `MOTION_NAME`, `_hacked_selected_files_`, and the active dataset path
-# below to your local motion setup before training / play.
-MOTION_NAME = "LafanFight5Files"
-# NOTE: Change this preset dataset root if you use this motion selection block.
-_path_ = os.path.expanduser("~/your/path/to/lafan1_gmr_unitree_g1_instinct")
-_hacked_selected_files_ = [
-    "fight1_subject2_retargeted.npz",
-    "fight1_subject3_retargeted.npz",
-    "fight1_subject5_retargeted.npz",
-    "fightAndSports1_subject1_retargeted.npz",
-    "fightAndSports1_subject4_retargeted.npz",
-]
-
-
-MOTION_NAME = "LafanFiltered"
-# NOTE: Change this preset dataset root if you use this motion selection block.
-_path_ = os.path.expanduser("~/Xyk/Datasets/lafan1_gmr_unitree_g1_instinct")
-_hacked_selected_files_ = [
-    "aiming1_subject1_retargeted.npz",  # O
-    "aiming1_subject4_retargeted.npz",  # O
-    "aiming2_subject2_retargeted.npz",  # O
-    "aiming2_subject3_retargeted.npz",  # O
-    "walk1_subject1_retargeted.npz",
-    "walk1_subject2_retargeted.npz",
-    "walk1_subject5_retargeted.npz",
-    "walk2_subject1_retargeted.npz",
-    "walk2_subject3_retargeted.npz",
-    "walk2_subject4_retargeted.npz",
-    "walk3_subject1_retargeted.npz",
-    "walk3_subject2_retargeted.npz",
-    "walk3_subject3_retargeted.npz",
-]
-
-# MOTION_NAME = "LafanGetup2S3"
-# _path_ = os.path.expanduser("~/your/path/to/lafan1_gmr_unitree_g1_instinct")
-# _hacked_selected_files_ = [
-#     "fallAndGetUp2_subject3_retargeted.npz",
-# ]
-
-with open(f"/tmp/{MOTION_NAME}.yaml", "w") as f:
-    yaml.dump(
-        {
-            "selected_files": _hacked_selected_files_,
-        },
-        f,
-    )
+# Motion inputs are supplied explicitly by the task factory; importing configs does no I/O.
+MOTION_NAME = "motions"
 motion_reference_cfg = MotionReferenceManagerCfg(
     name="motion_reference",
     entity_name="robot",
-    robot_model_path=os.path.join(
-        os.path.dirname(
-            os.path.dirname(
-                os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-            )
-        ),
-        "assets",
-        "resources",
-        "unitree_g1",
-        "urdf",
-        "g1_29dof_torsobase_popsicle.urdf",
-    ),
+    robot_model_path=G1_MJCF_PATH,
     debug_vis=False,
     reference_entity_name=None,
     link_of_interests=[
@@ -236,52 +159,14 @@ motion_reference_cfg = MotionReferenceManagerCfg(
     data_start_from="current_time",
     visualizing_robot_offset=(0.0, 1.5, 0.0),
     visualizing_robot_from="reference_frame",
-    motion_buffers={
-        #     "CMU_KIT": AmassMotionCfg(
-        #         path=os.path.expanduser("~/your/path/to/AMASS_CMU_KIT_retargetted_20250702"),  # type: ignore
-        #         filtered_motion_selection_filepath=os.path.expanduser(  # type: ignore
-        #             "~/your/path/to/AMASS_selections/CMU_KIT_weighted_retargetted_20250702.yaml",
-        #         ),
-        #     ),
-        # "CMU_KIT_DanceDB_BioMotionLab": AmassMotionCfg(
-        #     path=os.path.expanduser("~/your/path/to/AMASS_CMU_KIT_DanceDB_BioMotionLab_retargetted_20250702"),  # type: ignore
-        #     filtered_motion_selection_filepath=os.path.expanduser(  # type: ignore
-        #         "~/your/path/to/AMASS_selections/CMU_KIT_DanceDB_BioMotionLab_weighted_retargetted_20250702.yaml",
-        #     ),
-        # ),
-        # "CMU_KIT_ACCAD_DanceDB_HumanEva": AmassMotionCfg(
-        #     path=os.path.expanduser("~/your/path/to/AMASS_CMU_KIT_ACCAD_DanceDB_HumanEva_retargetted_20250702"),  # type: ignore
-        #     filtered_motion_selection_filepath=os.path.expanduser(  # type: ignore
-        #         # "~/your/path/to/AMASS_selections/CMU_KIT_ACCAD_DanceDB_HumanEva_weighted_retargetted_20250702.yaml",
-        #         "~/your/path/to/AMASS_selections/CMU_KIT_ACCAD_DanceDB_HumanEva_weighted_moverange_20250724_retargetted_20250702.yaml",
-        #     ),
-        # ),
-        # "UbisoftLAFAN1_GMR": AmassMotionCfg(
-        #     path=os.path.expanduser("~/your/path/to/lafan1_gmr_unitree_g1_instinct"),  # type: ignore
-        #     filtered_motion_selection_filepath=None,
-        # ),
-        MOTION_NAME: AmassMotionCfgBase(
-            # path = os.path.expanduser("~/your/path/to/AMASS_CMU_KIT_ACCAD_DanceDB_HumanEva_retargetted_20250702")
-            # path = os.path.expanduser("~/your/path/to/AMASS_SMPLX-NG_GMR_29dof_g1_torsoBase_retargetted_20250825_instinctnpz")
-            # path = os.path.expanduser("~/your/path/to/lafan1_gmr_unitree_g1_instinct")
-            # path = os.path.expanduser("~/your/path/to/AMASS_SMPLX-NG_GMR_29dof_g1_torsoBase_retargetted_20250901_instinctnpz")
-            # path = _path_
-            # NOTE: Change this to the active local whole-body shadowing dataset root.
-            path=os.path.expanduser("~/Xyk/Datasets/NoKov-Marslab-Motions-instinctnpz/20251016_diveroll4_single"),
-            retargetting_func=None,
-            filtered_motion_selection_filepath=None,
-            motion_start_from_middle_range=[0.0, 0.8],
-            motion_start_height_offset=0.0,
-            ensure_link_below_zero_ground=False,
-            # env_starting_stub_sampling_strategy = "concat_motion_bins"
-            env_starting_stub_sampling_strategy="independent",
-            buffer_device="output_device",
-            motion_interpolate_func=motion_interpolate_bilinear,
-            velocity_estimation_method="frontbackward",
-            motion_bin_length_s=1.0,
-        ),
-    },
-    mp_split_method="Even",
+    motion_buffers={"motions": AmassMotionCfgBase(
+        path="", retargetting_func=None, filtered_motion_selection_filepath=None,
+        motion_start_from_middle_range=[0.0, 0.8], motion_start_height_offset=0.0,
+        ensure_link_below_zero_ground=False, env_starting_stub_sampling_strategy="independent",
+        buffer_device="output_device", motion_interpolate_func=motion_interpolate_bilinear,
+        velocity_estimation_method="frontbackward", motion_bin_length_s=1.0,
+    )},
+    mp_split_method="None",
 )
 motion_reference_cfg_play = deepcopy(motion_reference_cfg)
 motion_reference_cfg_play.debug_vis = True

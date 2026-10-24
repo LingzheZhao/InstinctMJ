@@ -67,13 +67,14 @@ noise models (contour, artifacts, stereo, blur, too-close) are enabled in `G1Per
 
 ## Usage
 
-The dataset is the task's `MOTION_FOLDER` (default `~/Datasets/20251116_50cm_kneeClimbStep1`, download it from the
-[release](https://github.com/project-instinct/InstinctMJ/releases/latest)).
+Supply the dataset explicitly with `--motion-folder <dataset>` (download it from the
+[release](https://github.com/project-instinct/InstinctMJ/releases/latest)). Configuration imports do not
+read a dataset or select a motion.
 
 ```bash
 # train / resume (the replay buffer is refilled on resume)
-instinct-train Instinct-Perceptive-Shadowing-G1-v0 --num-envs 1024 --agent.max-iterations 8000
-instinct-train Instinct-Perceptive-Shadowing-G1-v0 --num-envs 1024 --agent.load-run <run> --agent.load-checkpoint model_<it>.pt
+instinct-train Instinct-Perceptive-Shadowing-G1-v0 --motion-folder <dataset> --num-envs 1024 --agent.max-iterations 8000
+instinct-train Instinct-Perceptive-Shadowing-G1-v0 --motion-folder <dataset> --num-envs 1024 --agent.load-run <run> --agent.load-checkpoint model_<it>.pt
 # evaluate (results in <run>/eval/; --run-dir <run> --watch evaluates every new checkpoint, --video-only records videos)
 python -m instinct_mj.scripts.supermimic.evaluate --checkpoint <run>/model_<it>.pt --motion-folder <dataset> --num-envs 128
 # viser web viewer

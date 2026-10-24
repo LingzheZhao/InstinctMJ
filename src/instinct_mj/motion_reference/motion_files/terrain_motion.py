@@ -126,12 +126,18 @@ class TerrainMotion(AmassMotion):
         all_motion_ids_with_origins = torch.where(all_motion_mask_with_origins)[0]
         if no_origins_mask.any():
             re_sample_ids = assigned_ids[no_origins_mask]
+            if len(all_motion_ids_with_origins) == 0:
+                raise ValueError("No selected motion has a matching terrain origin")
             resampled_motion_ids = torch.multinomial(
                 self._motion_weights[all_motion_ids_with_origins],
                 len(re_sample_ids),
                 replacement=True,
             ).to(self.buffer_device)
             self._assigned_env_motion_selection[re_sample_ids] = all_motion_ids_with_origins[resampled_motion_ids]
+            # A different trajectory has a different valid time support. Never
+            # retain the old trajectory's start time when repairing terrain assignment.
+            self._motion_buffer_start_time_s[re_sample_ids] = 0.0
+            self._sample_env_motion_start_time(re_sample_ids)
 
     def _sample_assigned_env_origins(self, assigned_ids: Sequence[int] | torch.Tensor) -> None:
         """Sample the origins for the assigned envs."""

@@ -285,11 +285,8 @@ class VaeAlgorithmCfg(InstinctRlPpoAlgorithmCfg):
             "num_rewards": 1,
         }
     )
-    teacher_logdir: object = field(
-        default_factory=lambda: os.path.expanduser(
-            "~/Xyk/Project-Instinct/InstinctMJ/logs/instinct_rl/g1_perceptive_shadowing/2026-03-07_15-29-45"
-        )
-    )
+    teacher_logdir: str | None = None
+
 
 
 @dataclass(kw_only=True)

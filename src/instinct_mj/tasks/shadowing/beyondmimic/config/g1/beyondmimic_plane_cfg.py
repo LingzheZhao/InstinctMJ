@@ -4,7 +4,6 @@ import os
 from copy import deepcopy
 
 import mjlab.envs.mdp as mdp
-import yaml
 from mjlab.managers import (
     CurriculumTermCfg,
     EventTermCfg,
@@ -47,20 +46,9 @@ G1_CFG = G1_29DOF_TORSOBASE_POPSICLE_CFG
 # NOTE: Change `MOTION_NAME`, `_hacked_selected_file_`, and the dataset path below
 # to your local motion setup before training / play.
 # Keep `_hacked_selected_file_` relative to the dataset root configured in `path`.
-MOTION_NAME = "LafanKungfu1"
-_hacked_selected_file_ = "fightAndSports1_subject1_retargetted.npz"
-MOTION_NAME = "LafanSprint1"
-_hacked_selected_file_ = "sprint1_subject2_retargetted.npz"
+# Dataset selection is an explicit runtime input, never an import-time write.
+MOTION_NAME = "motions"
 
-with open(f"/tmp/{MOTION_NAME}.yaml", "w") as f:
-    yaml.dump(
-        {
-            "selected_files": [
-                _hacked_selected_file_,
-            ],
-        },
-        f,
-    )
 motion_reference_cfg = MotionReferenceManagerCfg(
     name="motion_reference",
     entity_name="robot",
@@ -95,9 +83,9 @@ motion_reference_cfg = MotionReferenceManagerCfg(
         MOTION_NAME: AmassMotionCfgBase(
             # NOTE: Replace this with your local BeyondMimic motion dataset root.
             # Example: os.path.expanduser("~/your/path/to/lafan1_gmr_unitree_g1_instinct")
-            path=os.path.expanduser("~/Xyk/Datasets/UbisoftLAFAN1_GMR_g1_29dof_torsoBase_retargetted_instinctnpz"),
+            path="",
             retargetting_func=None,
-            filtered_motion_selection_filepath=f"/tmp/{MOTION_NAME}.yaml",
+            filtered_motion_selection_filepath=None,
             motion_start_from_middle_range=[0.0, 0.8],
             motion_start_height_offset=0.0,
             ensure_link_below_zero_ground=False,

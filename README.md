@@ -31,8 +31,8 @@ uv sync
 
 Download from the [SuperMimic release](https://github.com/project-instinct/InstinctMJ/releases/latest):
 
-- `20251116_50cm_kneeClimbStep1.zip`: the dataset. Unzip into `~/Datasets/` (the default `MOTION_FOLDER` in
-  `src/instinct_mj/tasks/shadowing/perceptive/config/g1/perceptive_shadowing_cfg.py`).
+- `20251116_50cm_kneeClimbStep1.zip`: the dataset. Unzip into an explicit input directory and pass it
+  with `--motion-folder`; configuration imports have no personal/default dataset path.
 - The trained policy checkpoint, its ONNX export and the world-model state (to resume training).
 
 ## Usage
@@ -83,3 +83,54 @@ authors of both. This branch is not affiliated with the SuperMimic authors.
 [CONTRIBUTOR_AGREEMENT.md](CONTRIBUTOR_AGREEMENT.md).
 
 Checkpoints trained outside InstinctMJ are not compatible: the joint order comes from the MJCF and differs from IsaacLab.
+
+### Explicit shadowing runtime inputs
+
+Flat and perceptive task configurations are importable without selecting or reading a dataset. Supply native
+motion buffers (including a `MotionBufferCfg.class_type` implementation), or an explicit motion folder, through
+`instinct_mj.tasks.shadowing.factory.make_shadowing_env_cfg`. The existing registry and its task IDs are unchanged:
+
+```python
+from instinct_mj.tasks.shadowing.factory import make_shadowing_env_cfg
+from instinct_mj.tasks.registry import load_env_cls
+
+cfg = make_shadowing_env_cfg(
+    "Instinct-Perceptive-Shadowing-G1-v0",
+    motion_folder="/data/current-motions", terrain_metadata="/data/current-motions/metadata.yaml",
+    num_envs=4, physics_dt=0.005, decimation=4,
+)
+env = load_env_cls("Instinct-Perceptive-Shadowing-G1-v0")(cfg=cfg, device="cuda:0")
+```
+
+The factory also accepts `robot` with its matching `robot_model_path`, a native `terrain` configuration,
+`reference_frame_interval_s`, and explicit native-buffer `sampling` settings. It does not infer a sampler from
+the number of motion files. MotionReferenceManager owns resets and reference time; its read-only `elapsed_time`
+returns that per-environment clock. The shared native G1 asset and its kinematic model use the real `torso_link`
+free root. `instinct-train` and `instinct-play` accept `--motion-folder` and optional `--terrain-metadata` for
+ordinary folder inputs. One-motion task IDs require an explicitly supplied one-motion source; they never write
+selection files or silently change start/bin settings because of dataset size.
+
+`InstinctRlVecEnvWrapper` owns the initial reset by default. Pass `reset_on_init=False` when the caller already
+owns it. Observation reads use reset/step caches, without another noise draw or history append. Optional
+`clip_actions` clamps submitted actions; `processed_depth(noisy=True/False)` copies the native processed noisy or
+clean camera image without sensing again. `refresh_observations_after_state_write(env_ids=...)` owns physical
+sensor/history refresh after an explicit state write, without resetting motion assignments or reference time.
+
+Native environments expose `add_physics_step_callback(callback(env, physics_dt))` after each real scene tick and
+`add_terminal_callback(callback(env, terminated, truncated))` after endpoint-forward/termination evaluation and
+before reward, events and auto-reset. Both return an idempotent unsubscribe callable. Retained callback data must
+be cloned. Camera sensing keeps its normal post-step phase: capture terminal depth with `auto_reset=False`, read
+the step cache, then explicitly reset done worlds. A zero-time endpoint refresh is not a physics sample.
+
+CPU contract checks: `python -m pytest -q tests/test_runtime_contracts.py`. The separate
+`tests/native/check_runtime_callbacks.py` diagnostic requires a provisioned native execution environment and fresh
+output root; CPU checks do not establish physical callback/contact accuracy or learned skill retention.
+
+`env.terrain_placement` copies actual environment/tile origins in world meters.
+`env.terrain_heightmap(resolution=..., bounds=...)` exports the compiled physical terrain's
+height grid as `heights[y,x]`, `origin=[x0,y0]`, meter resolution and a per-cell validity mask.
+It uses native geometry raycasts, not a separate terrain model or hidden height-field arrays.
+Infinite planes require explicit finite XY bounds; a top-down grid does not represent overhangs.
+
+Downstream production deployments may pin this fork with an external jointly resolved dependency lock;
+that deployment lock, not the donor's development `uv.lock`, controls the installed environment.

@@ -38,6 +38,8 @@ class PlayConfig:
     load_run: str | None = None
     checkpoint_pattern: str | None = None
     num_envs: int | None = None
+    motion_folder: str | None = None
+    terrain_metadata: str | None = None
     device: str | None = None
     viewer: Literal["auto", "native", "viser", "none"] = "auto"
     max_steps: int | None = None
@@ -392,6 +394,9 @@ def run_play(task_id: str, cfg: PlayConfig) -> None:
         os.environ.setdefault("MUJOCO_GL", "egl")
 
     env_cfg = load_env_cfg(task_id, play=True)
+    if cfg.motion_folder is not None:
+        from instinct_mj.tasks.shadowing.factory import configure_shadowing_env_cfg
+        configure_shadowing_env_cfg(env_cfg, motion_folder=cfg.motion_folder, terrain_metadata=cfg.terrain_metadata)
     agent_cfg = load_instinct_rl_cfg(task_id)
     device = _resolve_device(cfg.device)
     checkpoint: Path | None = None

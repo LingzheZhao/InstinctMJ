@@ -364,6 +364,13 @@ class MotionReferenceManager(Sensor):
         return self._env_origins
 
     @property
+    def elapsed_time(self) -> torch.Tensor:
+        """Per-environment reference clock in seconds; reading never advances it."""
+        if self._timestamp is None:
+            raise RuntimeError("Motion reference manager is not initialized")
+        return self._timestamp.clone()
+
+    @property
     def motion_buffers(self) -> dict[str, MotionBuffer]:
         """Get the active motion buffers."""
         return self._motion_buffers
