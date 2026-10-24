@@ -58,7 +58,25 @@ joint name order:
 
 def get_g1_spec() -> mujoco.MjSpec:
     """Load the local g1_29dof_torsobase_popsicle.xml as MjSpec."""
-    return mujoco.MjSpec.from_file(G1_MJCF_PATH)
+    spec = mujoco.MjSpec.from_file(G1_MJCF_PATH)
+    # Native entity selectors require identities for the actual shapes. Naming
+    # changes no shape, collision mask, material, priority or dynamics parameter.
+    for body in spec.bodies:
+        for index, geom in enumerate(body.geoms):
+            if not geom.name:
+                role = 'collision' if geom.contype or geom.conaffinity else 'visual'
+                geom.name = f'{body.name}_{role}_{index}'
+    return spec
+
+
+def foot_collision_geom_names() -> tuple[str, ...]:
+    """Actual collision shapes of the two G1 sole-bearing ankle-roll bodies."""
+    spec = get_g1_spec()
+    names = tuple(geom.name for name in ('left_ankle_roll_link', 'right_ankle_roll_link')
+                  for geom in spec.body(name).geoms if geom.contype or geom.conaffinity)
+    if not names or len(set(names)) != len(names):
+        raise ValueError('the shared G1 asset must declare distinct physical foot collision shapes')
+    return names
 
 
 # Initial state matching InstinctLab G1_29DOF_TORSOBASE_CFG (simplified variant).
