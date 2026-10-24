@@ -50,6 +50,33 @@ uv run instinct-play Instinct-Perceptive-Shadowing-G1-Play-v0 --checkpoint-file 
 
 Runs are written to `logs/instinct_rl/g1_perceptive_shadowing/`.
 
+## Acknowledgements
+
+This work builds on **SuperMimic** (Liao et al., CoRL 2026), whose method this branch follows, and on
+[**supermimic_vibed**](https://github.com/zita-ch/supermimic_vibed) by Chong Zhang (ETH Zurich, MIT License), the open
+reproduction from which the world model, replay buffer, rotation utilities and training loop were adapted. Many thanks to the
+authors of both. This branch is not affiliated with the SuperMimic authors.
+
+```bibtex
+@misc{liao2026supermimic,
+  title         = {SuperMimic: Scaling Humanoid Whole-Body Control with One Differentiable World Model},
+  author        = {Liao, Qiayuan and Shao, Yiyang and Long, Junfeng and Zakka, Kevin and Horowitz, Roberto and Abbeel, Pieter and Sreenath, Koushil},
+  year          = {2026},
+  eprint        = {2610.28480},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.RO},
+  note          = {CoRL 2026},
+  url           = {https://arxiv.org/abs/2610.28480}
+}
+
+@misc{zhang2026supermimicvibed,
+  title        = {supermimic\_vibed: an open reproduction of SuperMimic},
+  author       = {Zhang, Chong},
+  year         = {2026},
+  howpublished = {\url{https://github.com/zita-ch/supermimic_vibed}}
+}
+```
+
 ## License
 
 [CC BY-NC 4.0](LICENSE): no commercial use. Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md) and

@@ -143,3 +143,30 @@ remaining time is the simulator step (sensors, camera noise, managers).
 | Outputs | State increments | Adds contact logits, the latent increment and a failure head |
 | Policy | MLP encoder / decoder | The task's own depth policy network |
 | Reset sampling | Return-based bins | The task's adaptive motion bins |
+
+## Acknowledgements
+
+This work builds on **SuperMimic** (Liao et al., CoRL 2026), whose method this package follows, and on
+[**supermimic_vibed**](https://github.com/zita-ch/supermimic_vibed) by Chong Zhang (ETH Zurich, MIT License), the open
+reproduction from which the world model, replay buffer, rotation utilities and training loop were adapted. Many thanks to the
+authors of both. This package is not affiliated with the SuperMimic authors.
+
+```bibtex
+@misc{liao2026supermimic,
+  title         = {SuperMimic: Scaling Humanoid Whole-Body Control with One Differentiable World Model},
+  author        = {Liao, Qiayuan and Shao, Yiyang and Long, Junfeng and Zakka, Kevin and Horowitz, Roberto and Abbeel, Pieter and Sreenath, Koushil},
+  year          = {2026},
+  eprint        = {2610.28480},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.RO},
+  note          = {CoRL 2026},
+  url           = {https://arxiv.org/abs/2610.28480}
+}
+
+@misc{zhang2026supermimicvibed,
+  title        = {supermimic\_vibed: an open reproduction of SuperMimic},
+  author       = {Zhang, Chong},
+  year         = {2026},
+  howpublished = {\url{https://github.com/zita-ch/supermimic_vibed}}
+}
+```
