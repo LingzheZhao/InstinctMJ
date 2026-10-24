@@ -64,7 +64,7 @@ url = "https://pypi.nvidia.com/"
 explicit = true
 
 [tool.uv.sources]
-instinct_rl = { git = "https://github.com/project-instinct/instinct_rl.git", rev = "3a2844890387eda6d93a4465cdef9e767aba8546" }
+instinct_rl = { git = "https://github.com/LingzheZhao/instinct_rl.git", rev = "d15278ecb10a975a7114547fe1fa6b01b9c16a58" }
 warp-lang = { index = "nvidia", marker = "sys_platform != 'darwin'" }
 
 [tool.setuptools]
