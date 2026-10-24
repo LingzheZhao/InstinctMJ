@@ -669,7 +669,7 @@ dependencies = [
 requires-dist = [
     { name = "coacd" },
     { name = "gymnasium", specifier = ">=0.29" },
-    { name = "instinct-rl", git = "https://github.com/project-instinct/instinct_rl.git?rev=3a2844890387eda6d93a4465cdef9e767aba8546" },
+    { name = "instinct-rl", git = "https://github.com/LingzheZhao/instinct_rl.git?rev=d15278ecb10a975a7114547fe1fa6b01b9c16a58" },
     { name = "mediapy", specifier = ">=1.2.0" },
     { name = "mjlab", specifier = "==1.6.0" },
     { name = "mujoco", specifier = "~=3.11.0" },
@@ -694,7 +694,7 @@ requires-dist = [
 [[package]]
 name = "instinct-rl"
 version = "1.0.2"
-source = { git = "https://github.com/project-instinct/instinct_rl.git?rev=3a2844890387eda6d93a4465cdef9e767aba8546#3a2844890387eda6d93a4465cdef9e767aba8546" }
+source = { git = "https://github.com/LingzheZhao/instinct_rl.git?rev=d15278ecb10a975a7114547fe1fa6b01b9c16a58#d15278ecb10a975a7114547fe1fa6b01b9c16a58" }
 dependencies = [
     { name = "gitpython" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
