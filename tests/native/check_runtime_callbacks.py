@@ -61,11 +61,9 @@ def main():
     env, wrapper = None, None
     try:
         env = load_env_cls(args.task)(cfg=cfg,device=args.device,render_mode=None)
-        native_compute = env.observation_manager.compute
-        def compute(*args, **kwargs):
+        def observation(native, env_ids):
             result['observation_computations'] += 1
-            return native_compute(*args, **kwargs)
-        env.observation_manager.compute = compute
+        env.add_observation_callback(observation)
         def physical(native, dt):
             result['physics_callbacks'] += 1
             if dt != .005:

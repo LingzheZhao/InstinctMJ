@@ -68,6 +68,7 @@ instinct_rl = { git = "https://github.com/project-instinct/instinct_rl.git", rev
 warp-lang = { index = "nvidia", marker = "sys_platform != 'darwin'" }
 
 [tool.setuptools]
+license-files = ["LICENSE", "LICENSES/*.txt"]
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]

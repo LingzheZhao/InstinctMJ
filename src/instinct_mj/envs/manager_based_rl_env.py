@@ -1,3 +1,6 @@
+# The reset/step lifecycle is adapted from mjlab 1.6.0 ManagerBasedRlEnv.
+# Copyright 2025, The mjlab Developers. Licensed under the Apache License, Version 2.0;
+# see LICENSES/mjlab-Apache-2.0.txt. Instinct-specific extensions retain this project's license.
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -29,7 +32,6 @@ class InstinctRlEnv(ManagerBasedRlEnv):
         del kwargs  # Unused.
         from instinct_mj.envs.runtime_hooks import RuntimeCallbacks
         self.runtime_callbacks = RuntimeCallbacks()
-        self._inside_control_step = False
         self.cfg = cfg
         if self.cfg.seed is not None:
             self.cfg.seed = self.seed(self.cfg.seed)
@@ -93,7 +95,6 @@ class InstinctRlEnv(ManagerBasedRlEnv):
 
         self.load_managers()
         self.setup_manager_visualizers()
-        self._install_runtime_hooks()
 
     def load_managers(self) -> None:
         """Extend mjlab manager loading with InstinctLab multi-reward routing."""
@@ -119,16 +120,121 @@ class InstinctRlEnv(ManagerBasedRlEnv):
         super().setup_manager_visualizers()
         self.manager_visualizers["monitor_manager"] = self.monitor_manager
 
+    def reset(self, *, seed=None, env_ids=None, options=None):
+        """Reset selected worlds; one native sense/observation compute publishes them.
+
+        Unselected history/delay schedules and already-issued noisy observations
+        are retained. Construction does not reset; the caller owns startup reset.
+        """
+        del options  # Unused.
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, dtype=torch.int64, device=self.device)
+        if seed is not None:
+            self.seed(seed)
+        self.extras["log"] = dict()
+        self._reset_idx(env_ids)
+        self.scene.write_data_to_sim()
+        self.sim.forward()
+        # Scoped to env_ids so a partial reset does not advance stateful commands in the
+        # other envs.
+        self.command_manager.compute(dt=0.0, env_ids=env_ids)
+        self.sim.sense()
+        # Scoped to env_ids: only the reset envs' history/delay buffers receive
+        # the post-reset frame; other envs' observation timelines are untouched.
+        self.obs_buf = self._compute_observations(
+            update_history=True, env_ids=env_ids
+        )
+        self.recorder_manager.record_post_reset(env_ids)
+        return self.obs_buf, self.extras
+
     def step(self, action: torch.Tensor):
-        self._inside_control_step = True
-        try:
-            obs, reward, terminated, truncated, extras = super().step(action)
-        finally:
-            self._inside_control_step = False
+        """Run the pinned mjlab 1.6 lifecycle with explicit Instinct extension points.
+
+        Each actual substep publishes its measurement hook. A zero-time scene
+        refresh after integration makes termination/reward see the same fresh
+        endpoint with or without observers. Terminal hooks run before reward,
+        events and reset; cameras/noise/history are computed only at the native
+        post-step phase. The second forward retains SDK event/reset semantics.
+        """
+        if not self.cfg.auto_reset and torch.any(self._manual_reset_pending):
+            pending_ids = self._manual_reset_pending.nonzero(as_tuple=False).squeeze(-1)
+            raise RuntimeError(
+                f"Environments {pending_ids.cpu().tolist()} must be reset via "
+                "reset(env_ids=...) before calling step() again when auto_reset=False."
+            )
+
+        self.extras["log"] = dict()
+        self.action_manager.process_action(action.to(self.device))
+
+        for _ in range(self.cfg.decimation):
+            self._sim_step_counter += 1
+            self.action_manager.apply_action()
+            self.scene.write_data_to_sim()
+            self.sim.step()
+            self.scene.update(dt=self.physics_dt)
+            self._after_physics_substep(self.physics_dt)
+            self.metrics_manager.compute_substep()
+
+        # Update env counters.
+        self.episode_length_buf += 1
+        self.common_step_counter += 1
+
+        # Every consumer sees the reached endpoint, irrespective of observers.
+        self._refresh_control_endpoint()
+        self.reset_buf = self.termination_manager.compute()
+        self.reset_terminated = self.termination_manager.terminated
+        self.reset_time_outs = self.termination_manager.time_outs
+        self._after_termination()
+
+        self.reward_buf = self.reward_manager.compute(dt=self.step_dt)
+        self.metrics_manager.compute()
+
+        # Events fire on the fresh terminal state before automatic reset.
+        if "step" in self.event_manager.available_modes:
+            self.event_manager.apply(mode="step", dt=self.step_dt)
+        if "interval" in self.event_manager.available_modes:
+            self.event_manager.apply(mode="interval", dt=self.step_dt)
+
+        # Reset envs that terminated/timed-out and log the episode info.
+        reset_env_ids = self.reset_buf.nonzero(as_tuple=False).squeeze(-1)
+        if self.cfg.auto_reset and len(reset_env_ids) > 0:
+            self.recorder_manager.record_pre_reset(reset_env_ids)
+            self._reset_idx(reset_env_ids)
+            self.scene.write_data_to_sim()
+
+        # Preserve the SDK post-event/reset forward as well: events and reset
+        # may have written state after the endpoint was measured.
+        self.sim.forward()
+
+        # Pass dt=0 for freshly reset envs so their command timers start full,
+        # matching reset().
+        if self.cfg.auto_reset and len(reset_env_ids) > 0:
+            command_dt = self._command_dt
+            command_dt.fill_(self.step_dt)
+            command_dt[reset_env_ids] = 0.0
+            self.command_manager.compute(dt=command_dt)
+        else:
+            self.command_manager.compute(dt=self.step_dt)
+
+        self.sim.sense()
+        self.obs_buf = self._compute_observations(update_history=True)
+
+        if self.cfg.auto_reset and len(reset_env_ids) > 0:
+            self.recorder_manager.record_post_reset(reset_env_ids)
+        elif len(reset_env_ids) > 0:
+            self._manual_reset_pending[reset_env_ids] = True
+
+        self.recorder_manager.record_post_step()
+
         monitor_infos = self.monitor_manager.update(dt=self.step_dt)
-        extras.setdefault("step", {})
-        extras["step"].update(monitor_infos)
-        return obs, reward, terminated, truncated, extras
+        self.extras.setdefault("step", {}).update(monitor_infos)
+        return (
+            self.obs_buf,
+            self.reward_buf,
+            self.reset_terminated,
+            self.reset_time_outs,
+            self.extras,
+        )
 
     @property
     def cached_observations(self):
@@ -158,7 +264,7 @@ class InstinctRlEnv(ManagerBasedRlEnv):
         self.sim.forward()
         self.sim.sense()
         self.observation_manager.reset(ids)
-        self.obs_buf = self.observation_manager.compute(update_history=True, env_ids=ids)
+        self.obs_buf = self._compute_observations(update_history=True, env_ids=ids)
         return self.cached_observations
 
     @property
@@ -210,29 +316,52 @@ class InstinctRlEnv(ManagerBasedRlEnv):
         """Physical kinematics seen by every termination/reward, with or without observers."""
         return "fresh_forward_before_termination_and_reward"
 
-    def _install_runtime_hooks(self):
-        from instinct_mj.envs.runtime_hooks import scope_reset_observation_cache
-        scope_reset_observation_cache(self)
-        update_scene = self.scene.update
-        def scene_update(dt):
-            result = update_scene(dt)
-            if self._inside_control_step and dt > 0:
-                self.runtime_callbacks.physics_step(self, dt)
-            return result
-        self.scene.update = scene_update
-        compute_terminations = self.termination_manager.compute
-        def terminal_compute():
-            # mj_step integrates after its forward pass. The environment owns
-            # this endpoint, even when no passive measurement is registered:
-            # termination and reward must see the same reached physical state.
-            # dt=0 does not advance reference/camera noise or policy history.
-            self.sim.forward()
-            self.scene.update(dt=0.0)
-            result = compute_terminations()
-            self.runtime_callbacks.terminal_step(self, self.termination_manager.terminated,
-                                                  self.termination_manager.time_outs)
-            return result
-        self.termination_manager.compute = terminal_compute
+    def _after_physics_substep(self, dt):
+        """Class extension point after scene update, before substep metrics."""
+        self.runtime_callbacks.physics_step(self, dt)
+
+    def _refresh_control_endpoint(self):
+        """Refresh integrated kinematics without advancing clocks or sensing."""
+        self.sim.forward()
+        self.scene.update(dt=0.0)
+
+    def _after_termination(self):
+        """Class extension point before reward/events/reset, on the fresh state."""
+        self.runtime_callbacks.terminal_step(self, self.reset_terminated, self.reset_time_outs)
+
+    def _compute_observations(self, *, update_history, env_ids=None):
+        """Own observation publication without replacing any manager method.
+
+        The native manager computes once and owns history/delay/noise. Its
+        stateless noise still draws a full batch on a partial reset. Retain the
+        unreset worlds' previously issued rows in the returned/native cache;
+        only selected histories/delays are backfilled by the SDK. Empty reset
+        selections do not compute or consume RNG.
+        """
+        from instinct_mj.envs.runtime_hooks import snapshot_observation_rows, retain_observation_rows
+        previous, keep = None, None
+        if env_ids is not None and self.obs_buf:
+            keep = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
+            keep[env_ids] = False
+            if bool(keep.all()):
+                return self.obs_buf
+            if bool(keep.any()):
+                previous = snapshot_observation_rows(self.obs_buf, keep)
+        current = self.observation_manager.compute(update_history=update_history, env_ids=env_ids)
+        if previous is not None:
+            retain_observation_rows(current, previous, keep)
+        self.obs_buf = current
+        self.runtime_callbacks.observation_step(self, env_ids)
+        return current
+
+    def add_observation_callback(self, callback):
+        """Observe one native computation via ``callback(env, env_ids)``.
+
+        ``env_ids=None`` means an ordinary full step. This runs after scoped
+        publication into the native manager cache; it never triggers compute.
+        Callback consumers must clone any values retained across reset/step.
+        """
+        return self.runtime_callbacks.register(self.runtime_callbacks.observations, callback)
 
     def update_visualizers(self, visualizer: DebugVisualizer) -> None:
         super().update_visualizers(visualizer)

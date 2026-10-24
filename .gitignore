@@ -24,6 +24,7 @@ venv/
 .pytest_cache/
 /tests/*
 !/tests/test_runtime_contracts.py
+!/tests/test_runtime_lifecycle.py
 !/tests/native/
 /tests/native/*
 !/tests/native/check_runtime_callbacks.py

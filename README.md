@@ -79,7 +79,8 @@ authors of both. This branch is not affiliated with the SuperMimic authors.
 
 ## License
 
-[CC BY-NC 4.0](LICENSE): no commercial use. Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md) and
+[CC BY-NC 4.0](LICENSE): no commercial use. The adapted mjlab 1.6 reset/step lifecycle retains its
+[Apache 2.0 attribution and license](LICENSES/mjlab-Apache-2.0.txt). Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md) and
 [CONTRIBUTOR_AGREEMENT.md](CONTRIBUTOR_AGREEMENT.md).
 
 Checkpoints trained outside InstinctMJ are not compatible: the joint order comes from the MJCF and differs from IsaacLab.
@@ -118,11 +119,19 @@ sensor/history refresh after an explicit state write, without resetting motion a
 
 Native environments expose `add_physics_step_callback(callback(env, physics_dt))` after each real scene tick and
 `add_terminal_callback(callback(env, terminated, truncated))` after endpoint-forward/termination evaluation and
-before reward, events and auto-reset. Both return an idempotent unsubscribe callable. Retained callback data must
+before reward, events and auto-reset. `add_observation_callback(callback(env, env_ids))` observes the single native
+observation computation after publication; an empty reset selection does not compute. All return an idempotent
+unsubscribe callable. Retained callback data must
 be cloned. Camera sensing keeps its normal post-step phase: capture terminal depth with `auto_reset=False`, read
 the step cache, then explicitly reset done worlds. A zero-time endpoint refresh is not a physics sample.
 
-CPU contract checks: `python -m pytest -q tests/test_runtime_contracts.py`. The separate
+The sole `InstinctRlEnv.step/reset` implements the pinned mjlab 1.6 lifecycle explicitly; it does not replace
+scene or manager instance methods. Class extension points separate actual substeps, fresh endpoint preparation,
+termination and observation publication. Partial resets retain unselected issued observations and scope native
+history/delay backfills; native stateless noise still draws a full batch once. Endpoint preparation always runs,
+even without passive observers. Native post-event/reset forwarding and one post-step sensing pass remain.
+
+CPU contract checks: `python -m pytest -q tests/test_runtime_contracts.py tests/test_runtime_lifecycle.py`. The separate
 `tests/native/check_runtime_callbacks.py` diagnostic requires a provisioned native execution environment and fresh
 output root; CPU checks do not establish physical callback/contact accuracy or learned skill retention.
 
