@@ -25,6 +25,7 @@ venv/
 /tests/*
 !/tests/test_runtime_contracts.py
 !/tests/test_runtime_lifecycle.py
+!/tests/test_reference_clock.py
 !/tests/native/
 /tests/native/*
 !/tests/native/check_runtime_callbacks.py

@@ -41,7 +41,7 @@ def time_from_reference_update(
             an all-trues mask. Only effective in multi_frames mode.
     """
     motion_reference: MotionReferenceManager = env.scene[asset_cfg.name]
-    return_ = motion_reference.time_passed_from_update.unsqueeze(-1)
+    return_ = motion_reference.time_passed_from_update.to(torch.float32).unsqueeze(-1)
     if multi_frames:
         # (num_envs, 1) -> (num_envs, num_frames, 1)
         return_ = return_.unsqueeze(-1).expand(-1, motion_reference.cfg.num_frames, -1)
@@ -64,7 +64,7 @@ def ref_frame_interval(
     """
     motion_reference: MotionReferenceManager = env.scene[asset_cfg.name]
     frame_interval = motion_reference.data.time_to_target_frame[..., :1]
-    time_from_reference_update = motion_reference.time_passed_from_update.unsqueeze(-1)
+    time_from_reference_update = motion_reference.time_passed_from_update.to(frame_interval.dtype).unsqueeze(-1)
     time_to_target = frame_interval - time_from_reference_update
     return torch.cat(
         [

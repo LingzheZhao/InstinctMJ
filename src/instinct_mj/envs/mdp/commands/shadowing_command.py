@@ -1908,6 +1908,6 @@ class TimeToTargetCommand(ShadowingCommandBase):
         self._update_command()
 
     def _update_command_by_env_ids(self, env_ids: Sequence[int] | torch.Tensor):
-        self._command[env_ids, :, 0] = self._motion_reference.data.time_to_target_frame[
+        self._command[env_ids, :, 0] = (self._motion_reference.data.time_to_target_frame[
             env_ids
-        ] - self._motion_reference.time_passed_from_update[env_ids].unsqueeze(-1)
+        ] - self._motion_reference.time_passed_from_update[env_ids].unsqueeze(-1)).to(self._command.dtype)

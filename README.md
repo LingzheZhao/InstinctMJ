@@ -111,6 +111,13 @@ free root. `instinct-train` and `instinct-play` accept `--motion-folder` and opt
 ordinary folder inputs. One-motion task IDs require an explicitly supplied one-motion source; they never write
 selection files or silently change start/bin settings because of dataset size.
 
+Reference time uses per-environment integer physics ticks, converted to float64 seconds for current and future
+motion-buffer queries. The first positive `update(dt)` fixes the physics step for that manager; subsequent positive
+steps must use the same `dt`. A zero-time update refreshes caches without advancing time or selecting a step size.
+Resets clear only the selected environments' ticks. Rebuild the manager to change the physics step. Published
+reference observations and commands retain their original data dtype; the float64 query clock does not promote
+policy inputs.
+
 `InstinctRlVecEnvWrapper` owns the initial reset by default. Pass `reset_on_init=False` when the caller already
 owns it. Observation reads use reset/step caches, without another noise draw or history append. Optional
 `clip_actions` clamps submitted actions; `processed_depth(noisy=True/False)` copies the native processed noisy or

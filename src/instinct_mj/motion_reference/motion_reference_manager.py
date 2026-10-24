@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import math
 import os
 import xml.etree.ElementTree as ET
 from collections.abc import Sequence
@@ -57,6 +58,8 @@ class MotionReferenceManager(Sensor):
         self._scene: Scene | None = None
         self._entities: dict = {}
         self._timestamp: torch.Tensor | None = None
+        self._elapsed_ticks: torch.Tensor | None = None
+        self._clock_dt: float | None = None
         self._env_origins: torch.Tensor | None = None
         self._reference_entity = None
 
@@ -109,10 +112,21 @@ class MotionReferenceManager(Sensor):
         Keep motion buffer refresh lazy (triggered by data access) to match
         InstinctLab timing semantics for keyframe-threshold terms.
         """
+        if not math.isfinite(dt) or dt < 0:
+            raise ValueError("Motion reference update dt must be finite and nonnegative.")
+        if self._is_initialized and dt > 0:
+            if self._clock_dt is not None and dt != self._clock_dt:
+                raise ValueError("Motion reference physics dt is fixed; create a new manager to change it.")
+            self._clock_dt = float(dt)
         super().update(dt)
         if not self._is_initialized or self._timestamp is None:
             return
-        self._timestamp += dt
+        if dt > 0:
+            # This manager owns time. Repeated FP32 (or FP64) addition can cross
+            # a source-row floor boundary. Keep exact step counts per world and
+            # materialize seconds in FP64, including after selective resets.
+            self._elapsed_ticks += 1
+            self._timestamp.copy_(self._elapsed_ticks.to(torch.float64) * self._clock_dt)
 
     def _compute_data(self) -> MotionReferenceData:
         """Return the motion reference data (mjlab Sensor cache interface)."""
@@ -429,6 +443,7 @@ class MotionReferenceManager(Sensor):
         self._resample_update_period(env_ids)
 
         # Reset per-env timeline state. The next data query/update will refill references at t=0.
+        self._elapsed_ticks[env_ids] = 0
         self._timestamp[env_ids] = 0.0
         self._timestamp_last_update[env_ids] = 0.0
         self._data_timestamp_last_update[env_ids] = 0.0
@@ -613,7 +628,7 @@ class MotionReferenceManager(Sensor):
         """Update the motion reference buffers for the given env_ids."""
         env_ids = torch.as_tensor(env_ids, device=self.device)
         # compute the time left to reach the specific frame
-        time_to_target_frame = torch.arange(self.cfg.num_frames, device=self.device, dtype=torch.float32)
+        time_to_target_frame = torch.arange(self.cfg.num_frames, device=self.device, dtype=torch.float64)
         if self.cfg.data_start_from == "one_frame_interval":
             time_to_target_frame += 1
         time_to_target_frame = time_to_target_frame.unsqueeze(0).repeat(len(env_ids), 1)
@@ -636,7 +651,8 @@ class MotionReferenceManager(Sensor):
             if self._symmetric_augmentation_conditions_met:
                 env_ids_to_augment = env_ids_this_buffer[self._env_symmetric_augmentation_mask[env_ids_this_buffer]]
                 self._symmetric_augment_reference_data(self._data, env_ids_to_augment)
-        self._data.time_to_target_frame[env_ids] = time_to_target_frame
+        # Time queries retain FP64; published policy features retain their data dtype.
+        self._data.time_to_target_frame[env_ids] = time_to_target_frame.to(self._data.time_to_target_frame.dtype)
 
         # set invalid timestamp data to invalid value.
         self._data.time_to_target_frame[self._data.validity == 0] = -1.0
@@ -706,14 +722,16 @@ class MotionReferenceManager(Sensor):
             **make_empty_data_kwargs,
         )
         # Add an additional timestamp to the reference frame data, which is used for lazy update of the reference frame.
-        self._reference_frame_timestamp = torch.zeros(self._num_envs, device=self.device)
+        self._reference_frame_timestamp = torch.zeros(self._num_envs, device=self.device, dtype=torch.float64)
 
         # Timestamp tracking.
-        self._timestamp = torch.zeros(self._num_envs, device=self.device)
+        self._timestamp = torch.zeros(self._num_envs, device=self.device, dtype=torch.float64)
+        self._elapsed_ticks = torch.zeros(self._num_envs, device=self.device, dtype=torch.int64)
+        self._clock_dt = None
         # Keyframe logical clock.
-        self._timestamp_last_update = torch.zeros(self._num_envs, device=self.device)
+        self._timestamp_last_update = torch.zeros(self._num_envs, device=self.device, dtype=torch.float64)
         # Data refresh clock (used by lazy buffer refresh checks).
-        self._data_timestamp_last_update = torch.zeros(self._num_envs, device=self.device)
+        self._data_timestamp_last_update = torch.zeros(self._num_envs, device=self.device, dtype=torch.float64)
         self._is_outdated = torch.ones(self._num_envs, dtype=torch.bool, device=self.device)
 
         make_empty_state_kwargs = self._prepare_state_class_kwargs()
@@ -849,18 +867,19 @@ class MotionReferenceManager(Sensor):
         # resample the frame interval
         if env_ids is None and isinstance(self.cfg.frame_interval_s, Sequence):
             self._frame_interval_s = (
-                torch.rand(self._num_envs, device=self.device)
+                torch.rand(self._num_envs, device=self.device, dtype=torch.float64)
                 * (self.cfg.frame_interval_s[1] - self.cfg.frame_interval_s[0])
                 + self.cfg.frame_interval_s[0]
             )
         elif isinstance(self.cfg.frame_interval_s, Sequence):
             self._frame_interval_s[env_ids] = (
-                torch.rand(len(env_ids), device=self.device)  # type: ignore
+                torch.rand(len(env_ids), device=self.device, dtype=torch.float64)  # type: ignore
                 * (self.cfg.frame_interval_s[1] - self.cfg.frame_interval_s[0])
                 + self.cfg.frame_interval_s[0]
             )
         elif (not hasattr(self, "_frame_interval_s")) and (not isinstance(self.cfg.frame_interval_s, Sequence)):
-            self._frame_interval_s = torch.ones(self._num_envs, device=self.device) * self.cfg.frame_interval_s
+            self._frame_interval_s = torch.full((self._num_envs,), self.cfg.frame_interval_s,
+                                              device=self.device, dtype=torch.float64)
         elif hasattr(self, "_frame_interval_s") and (not isinstance(self.cfg.frame_interval_s, Sequence)):
             pass
         else:
