@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from .mdp import CAMERA_CTX_DIM, MDP, XI_COM, XI_DQ, XI_FRICTION_START, XI_KD, XI_KP, XI_MASS
+from .mdp import MDP, XI_COM, XI_DQ, XI_FRICTION_START, XI_KD, XI_KP, XI_MASS
 from .rotations import quat_to_mat
 
 
@@ -59,24 +59,6 @@ class SimReader:
         xi[:, XI_MASS] = model.body_mass[:, body_ids] / torch.as_tensor(mj.body_mass[body_ids.cpu().numpy()], device=env.device, dtype=torch.float32)
         xi[:, XI_FRICTION_START:] = model.geom_friction[:, mdp.collision_geom_ids].flatten(1)
         return xi
-
-
-def camera_context(env) -> torch.Tensor:
-    """Per-env randomized camera mount offset (position 3, rotation vector 3) as left by ``randomize_ray_offsets``.
-
-    The event shifts the ray origins and rotates the ray directions of the camera sensor; the rotation vector is the
-    least-squares small-angle fit of the nominal pinhole directions onto the actual ones.
-    """
-    cam = env.scene["camera"]
-    d_nom = cam._compute_pinhole_rays_from_intrinsics(cam._camera_data.intrinsic_matrices)[1]
-    d_act = cam.ray_directions
-    pos = cam.ray_starts.mean(1)
-    # d_act ~ d_nom + w x d_nom  =>  sum_i (|d_i|^2 I - d_i d_i^T) w = sum_i d_nom_i x d_act_i
-    A = d_nom.shape[1] * torch.eye(3, device=d_nom.device) - torch.einsum("nri,nrj->nij", d_nom, d_nom)
-    w = torch.linalg.solve(A, torch.cross(d_nom, d_act, dim=-1).sum(1).unsqueeze(-1)).squeeze(-1)
-    ctx = torch.cat((pos, w), -1)
-    assert ctx.shape[-1] == CAMERA_CTX_DIM
-    return ctx
 
 
 # The task's ``height_scanner`` (``make_perceptive_scene_sensors``): GridPattern 1.6 x 1.0 m @ 0.1 m, max_distance 5 m.

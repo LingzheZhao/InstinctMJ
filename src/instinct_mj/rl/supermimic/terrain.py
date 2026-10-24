@@ -20,7 +20,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .rotations import yaw_mat
+from .rotations import mm, yaw_mat
 
 HEIGHTMAP_CACHE_VERSION = 2
 
@@ -127,5 +127,5 @@ class HeightScanner:
     def height_scan(self, p: torch.Tensor, R: torch.Tensor) -> torch.Tensor:
         """Height of the root above the ground at every ray: (B, 187), differentiable w.r.t. ``p`` and ``R``."""
         H = yaw_mat(R)[..., :2, :2]  # (B, 2, 2)
-        xy = p[:, None, :2] + self.offsets @ H.transpose(-1, -2)  # (B, K, 2)
+        xy = p[:, None, :2] + mm(self.offsets, H.transpose(-1, -2))  # (B, K, 2)
         return torch.clamp(p[:, 2:3] - self.ground_height(xy), max=self.max_distance)

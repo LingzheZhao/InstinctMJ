@@ -14,7 +14,7 @@ import torch
 from instinct_mj.motion_reference.motion_files.terrain_motion import TerrainMotion
 from instinct_mj.motion_reference.motion_reference_manager import MotionReferenceManager
 
-from .rotations import quat_to_mat, tan_norm_from_mat
+from .rotations import mm, mv, quat_to_mat, tan_norm_from_mat
 
 
 class MotionLib:
@@ -71,11 +71,11 @@ class MotionLib:
         jp = (self.q[fut] - default_q) * valid.unsqueeze(-1)
         jv = self.qd[fut] * valid.unsqueeze(-1)
         Rt0 = self.root_Rt[f].unsqueeze(1)
-        pos_b = (Rt0 @ (self.root_p[fut] - self.root_p[f].unsqueeze(1)).unsqueeze(-1)).squeeze(-1)
+        pos_b = mv(Rt0, self.root_p[fut] - self.root_p[f].unsqueeze(1))
         return torch.cat((jp.flatten(1), jv.flatten(1), pos_b.flatten(1)), -1)
 
     def goal_rotation(self, f: torch.Tensor, phase: torch.Tensor, R: torch.Tensor) -> torch.Tensor:
         """``rotation_ref_command``: tangent-normal of ``R^T R_ref`` for the future frames (zero where invalid)."""
         fut, valid = self.future_frames(f, phase)
-        rel = R.transpose(-1, -2).unsqueeze(1) @ self.root_R[fut]
+        rel = mm(R.transpose(-1, -2).unsqueeze(1), self.root_R[fut])
         return (tan_norm_from_mat(rel) * valid.unsqueeze(-1)).flatten(1)

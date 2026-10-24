@@ -21,7 +21,7 @@ from instinct_mj.tasks.registry import load_instinct_rl_cfg
 os.environ.setdefault("MUJOCO_GL", "egl")
 cfg = load_instinct_rl_cfg(TASK_ID)
 cfg.device = "cuda:0"
-for k, v in dict(buffer_steps=120, warmup_steps=64, pi_batch=128, wm_batch=256, depth_windows=64, depth_pairs=64, fail_windows=64, wm_only_iters=0).items():
+for k, v in dict(buffer_steps=120, warmup_steps=64, pi_batch=128, wm_batch=256, fail_windows=64, wm_only_iters=0).items():
     setattr(cfg, k, v)
 env_cfg = build_env_cfg(TASK_ID, 32, "~/Datasets/20251116_50cm_kneeClimbStep1")
 env_cfg.seed = 42

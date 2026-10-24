@@ -37,7 +37,8 @@ class ReplayBuffer:
             "terminated": ((), torch.bool),  # the transition ended in a REAL termination (not a timeout / dataset end)
             "phase": ((), torch.float32),  # fractional reference time at s (see MotionLib.current_frame)
             "depth": (DEPTH_SHAPE, torch.float16),  # the env's (noised) processed policy ``depth_image`` at s
-            "depth1_clean": (DEPTH_SHAPE, torch.float16),  # CLEAN processed depth image at s1 (pre-reset): head target
+            "depth1": (DEPTH_SHAPE, torch.float16),  # the env's (noised) policy ``depth_image`` at s1 (pre-reset): latent target
+            "depth1_clean": (DEPTH_SHAPE, torch.float16),  # CLEAN processed depth image at s1 (pre-reset): reconstruction target
             "ep_step": ((), torch.int32),
             "done": ((), torch.bool),
         }
@@ -92,29 +93,14 @@ class ReplayBuffer:
         ages = t0.unsqueeze(-1) + torch.arange(k, device=self.device)
         rows = self._row(ages)
         e = env.unsqueeze(-1).expand_as(rows)
-        out = {key: self.data[key][rows, e] for key in ("s", "s1", "a", "contact", "done", "depth", "depth1_clean", "terminated", "f1", "phase1", "origin1")}
+        keys = ("s", "s1", "a", "contact", "done", "depth", "depth1", "depth1_clean", "terminated", "f1", "phase1", "origin1")
+        out = {key: self.data[key][rows, e] for key in keys}
         # transition j is valid if no episode ended at transitions 0..j-1 (the done transition itself is valid)
         d = out["done"].float()
         out["mask"] = torch.cumprod(torch.cat((torch.ones(B, 1, device=self.device), 1 - d[:, :-1]), -1), -1)
         out["env"], out["age0"] = env, t0
         out["weight"] = weight
         return out
-
-    def sample_pairs(self, B: int, max_gap: int, env_range: tuple[int, int] | None = None):
-        """(anchor, target) pairs of the same episode with a random gap 1..max_gap (teacher-forced depth training):
-        anchor = image / state at row t0, target = image / state s1 of row t0 + gap - 1; plus the pair validity."""
-        gap = torch.randint(1, max_gap + 1, (B,), device=self.device)
-        t0 = torch.randint(0, self.size - max_gap + 1, (B,), device=self.device)
-        env = torch.randint(*(env_range if env_range is not None else (0, self.N)), (B,), device=self.device)
-        rows = self._row(t0.unsqueeze(-1) + torch.arange(max_gap, device=self.device))
-        done = self.data["done"][rows, env.unsqueeze(-1).expand_as(rows)]
-        before_target = torch.arange(max_gap, device=self.device) < (gap - 1).unsqueeze(-1)
-        valid = ~(done & before_target).any(-1)  # no episode ended before the target transition
-        row0, row_t = self._row(t0), self._row(t0 + gap - 1)
-        return {
-            "anchor_depth": self.data["depth"][row0, env], "s0": self.data["s"][row0, env],
-            "target_depth": self.data["depth1_clean"][row_t, env], "s1": self.data["s1"][row_t, env], "valid": valid, "env": env,
-        }  # fmt: skip
 
     def eligible_starts(self, ok_fn, env_range: tuple[int, int] | None = None, max_age: int | None = None) -> torch.Tensor:
         """(M, 2) ``(age, env)`` pairs of all buffered states for which ``ok_fn(f)`` (global frame index) holds."""

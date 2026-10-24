@@ -18,7 +18,7 @@ import torch
 
 from .kinematics import G1Kinematics
 from .motion_lib import MotionLib
-from .rotations import mat_to_6d, mat_to_quat, quat_to_mat, rot_angle_sq, yaw_mat
+from .rotations import mat_to_6d, mat_to_quat, mm, mv, quat_to_mat, rot_angle_sq, yaw_mat
 from .terrain import HeightScanner
 
 NUM_J = 29
@@ -45,15 +45,6 @@ def unflatten_state(x: torch.Tensor):
 
 DEPTH_SHAPE = (1, 18, 32)  # processed depth image of the task's policy group (C, H, W)
 DEPTH_DIM = 18 * 32
-CAMERA_CTX_DIM = 6  # randomized camera mount offset (position 3, rotation vector 3), see ``sim.camera_context``
-
-
-def relative_root_pose(S_anchor, S) -> torch.Tensor:
-    """Pose of the root (= camera mount, ``torso_link``) at ``S`` expressed in the root frame at ``S_anchor``: position (3)
-    and rotation (6D). Together with the camera mount offset this fixes the relative camera pose."""
-    p_a, R_a = S_anchor[0], S_anchor[1]
-    dp = (R_a.transpose(-1, -2) @ (S[0] - p_a).unsqueeze(-1)).squeeze(-1)
-    return torch.cat((dp, mat_to_6d(R_a.transpose(-1, -2) @ S[1])), -1)
 
 
 def invariant_features(S) -> torch.Tensor:
@@ -65,7 +56,7 @@ def invariant_features(S) -> torch.Tensor:
     H = yaw_mat(R)
     Rt = R.transpose(-1, -2)
     return torch.cat(
-        (mat_to_6d(H.transpose(-1, -2) @ R), (Rt @ v.unsqueeze(-1)).squeeze(-1), (Rt @ w.unsqueeze(-1)).squeeze(-1), q, qd),
+        (mat_to_6d(mm(H.transpose(-1, -2), R)), mv(Rt, v), mv(Rt, w), q, qd),
         -1,
     )
 
@@ -140,7 +131,7 @@ class MDP:
         """Noise-free proprioceptive observation: projected gravity, base ang vel (body), joint pos/vel (rel), last action."""
         p, R, v, w, q, qd = S
         pg = -R[..., 2, :]  # R^T (0, 0, -1)
-        w_b = (R.transpose(-1, -2) @ w.unsqueeze(-1)).squeeze(-1)
+        w_b = mv(R.transpose(-1, -2), w)
         return torch.cat((pg, w_b, q - (self.default_q + xi[..., XI_DQ]), qd, a_prev), -1)
 
     def add_noise(self, o: torch.Tensor) -> torch.Tensor:
@@ -175,10 +166,10 @@ class MDP:
         p, R, v, wv, q, qd = S
         bp, bR, bv, bw = self.kin.forward(*S)
         rp, rR = m.root_p[f] + origin, m.root_R[f]
-        dR = yaw_mat(R @ rR.transpose(-1, -2))
+        dR = yaw_mat(mm(R, rR.transpose(-1, -2)))
         anchor = torch.cat((p[..., :2], rp[..., 2:3]), -1)
-        ref_bp = anchor.unsqueeze(-2) + (dR.unsqueeze(-3) @ (m.link_p[f] - m.root_p[f].unsqueeze(-2)).unsqueeze(-1)).squeeze(-1)
-        ref_bR = dR.unsqueeze(-3) @ m.link_R[f]
+        ref_bp = anchor.unsqueeze(-2) + mv(dR.unsqueeze(-3), m.link_p[f] - m.root_p[f].unsqueeze(-2))
+        ref_bR = mm(dR.unsqueeze(-3), m.link_R[f])
         e_pos = ((ref_bp - bp) ** 2).sum(-1).mean(-1)
         e_rot = rot_angle_sq(ref_bR, bR).mean(-1)
         e_lv = ((m.link_v[f] - bv) ** 2).sum(-1).mean(-1)
@@ -239,12 +230,12 @@ class MDP:
         Ht = yaw_mat(R).transpose(-1, -2)
         rp, rR = m.root_p[f] + origin, m.root_R[f]
         bp = self.kin.forward(*S)[0]
-        dR = yaw_mat(R @ rR.transpose(-1, -2))
+        dR = yaw_mat(mm(R, rR.transpose(-1, -2)))
         anchor = torch.cat((p[..., :2], rp[..., 2:3]), -1)
-        ref_bp = anchor.unsqueeze(-2) + (dR.unsqueeze(-3) @ (m.link_p[f] - m.root_p[f].unsqueeze(-2)).unsqueeze(-1)).squeeze(-1)
-        e_body = (Ht.unsqueeze(-3) @ (ref_bp - bp).unsqueeze(-1)).squeeze(-1).flatten(-2)
-        e_root = (Ht @ (rp - p).unsqueeze(-1)).squeeze(-1)
-        rel = mat_to_6d(R.transpose(-1, -2) @ rR)
+        ref_bp = anchor.unsqueeze(-2) + mv(dR.unsqueeze(-3), m.link_p[f] - m.root_p[f].unsqueeze(-2))
+        e_body = mv(Ht.unsqueeze(-3), ref_bp - bp).flatten(-2)
+        e_root = mv(Ht, rp - p)
+        rel = mat_to_6d(mm(R.transpose(-1, -2), rR))
         return torch.cat((invariant_features(S), m.q[f] - q, e_body, e_root, rel, xi_n, goal, scan), -1)
 
     def critic_dim(self) -> int:

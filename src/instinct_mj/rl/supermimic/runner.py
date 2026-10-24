@@ -6,9 +6,10 @@ The simulator is the unchanged mjlab perceptive shadowing env (including the dep
 ``InstinctRlVecEnvWrapper`` (DR, resets, the task's BeyondMimic adaptive bin sampling, terminations and timeouts stay the
 task's; the reference's return-based reset-bin sampler is therefore NOT used). Rewards / terminations in imagination are
 the analytic heads of ``mdp.py``. The policy IS the task's own actor (``EncoderActorCritic`` with the Conv2d depth
-encoder, built by ``instinct_rl.modules.build_actor_critic`` from the task's policy cfg) and acts on the task's ``policy`` observation group; in
-imagination that observation is assembled analytically (``MDP.policy_obs``) with the depth image rendered by the
-world model's ``DepthEnsemble``.
+encoder, built by ``instinct_rl.modules.build_actor_critic`` from the task's policy cfg) and acts on the task's ``policy`` observation group.
+Vision is a latent of the world-model state: the policy's depth encoder ``E`` is trained by the world model (clean-image
+reconstruction), its latent z = E(real image) starts every imagination and the world model predicts z with the state;
+in imagination the actor MLP acts on the predicted z directly (no image is rendered).
 
 The runner replaces ``OnPolicyRunner`` as the task's ``runner_entry_point`` (``instinct-train`` / ``instinct-play`` use
 ``__init__``, ``learn``, ``save`` / ``load``, ``get_inference_policy``, ``export_as_onnx``, ``add_git_repo_to_log``); there
@@ -35,15 +36,15 @@ from tensorboardX import SummaryWriter
 from . import networks
 from .buffer import ReplayBuffer
 from .depth import DepthPipeline
-from .mdp import DEPTH_DIM, DEPTH_SHAPE, flatten_state, relative_root_pose, unflatten_state
-from .networks import Critic, DepthEnsemble, FailureHead, WorldModel
-from .sim import SimReader, build_mdp, camera_context
+from .mdp import DEPTH_DIM, DEPTH_SHAPE, flatten_state, unflatten_state
+from .networks import Critic, FailureHead, LatentDecoder, WorldModel
+from .sim import SimReader, build_mdp
 
 # per-component floors on the error normalization (pos, rot, lin vel, ang vel, q, qd increments)
 ERR_FLOOR = torch.cat((torch.full((3,), 3e-3), torch.full((3,), 5e-3), torch.full((3,), 2e-2), torch.full((3,), 5e-2),
                        torch.full((29,), 3e-3), torch.full((29,), 5e-2)))  # fmt: skip
 CONTACT_LOSS_WEIGHT = 0.1
-DEPTH_GAP_STEPS = (1, 8, 16, 32)
+LATENT_GAP_STEPS = (1, 8, 16, 32)
 
 
 class SuperMimicRunner:
@@ -52,7 +53,7 @@ class SuperMimicRunner:
     Construction is light and is all that ``instinct-play`` needs: the task's policy (``EncoderActorCritic`` built by
     ``instinct_rl.modules.build_actor_critic``), its optimizer and the observation normalizers, plus ``load`` /
     ``get_inference_policy`` / ``export_as_onnx``. The training-only components (analytic MDP heads, heightmap, world model,
-    depth / failure heads, critic, replay buffer, ``torch.compile``) are built by :meth:`setup_training`, which ``learn``
+    latent decoder, failure head, critic, replay buffer, ``torch.compile``) are built by :meth:`setup_training`, which ``learn``
     calls first; the sidecar of a resumed run is read there as well."""
 
     def __init__(self, env, train_cfg: dict, log_dir: str | None = None, device: str = "cuda:0"):
@@ -87,6 +88,8 @@ class SuperMimicRunner:
             offset += math.prod(shape)
         self.depth_slice = slice(offset, offset + DEPTH_DIM)
         assert math.prod(obs_format["policy"]["depth_image"]) == DEPTH_DIM
+        self.enc = self.ac.encoders._parallel_blocks["depth_image"]  # the policy's depth encoder E (Conv2dHeadModel)
+        self.z_dim = self.enc.output_size
 
         self.N = env.num_envs
         self.it = 0
@@ -115,20 +118,24 @@ class SuperMimicRunner:
         self.xi = self.reader.context(self.mdp)  # (N, xi_dim) episode-constant context of every env
         self.mdp.set_xi_stats(self.xi)
         self.xi_n = self.mdp.normalize_xi(self.xi)
-        self.cam_ctx = camera_context(self.unwrapped)  # (N, 6) randomized camera mount offsets
-        self.depth_pipe = DepthPipeline(self.unwrapped, compile_stages=c["compile_policy"])
+        self.depth_pipe = DepthPipeline(self.unwrapped)
         self.K = len(self.reader.contact_body_ids)
         self.hist, self.horizon, self.goal_dim = c["hist"], c["horizon"], self.mdp.goal_dim
-        self.scan_dim = self.scanner.num_rays
         assert c["goal_frames"] == self.motion.goal_frames
         if not bool((self.motion.clip_len > self.horizon).any()):
             raise ValueError(f"No reference clip is longer than the imagination horizon ({self.horizon} frames).")
         assert c["warmup_steps"] >= max(self.horizon, c["wm_window"])
 
-        self.wm = WorldModel(self.scan_dim, self.K, self.mdp.xi_dim).to(device)
-        self.depth_head = DepthEnsemble(c["depth_ensemble"], self.scan_dim).to(device)
+        # the actor MLP input is the encoder output segment: every non-image term in order, then the depth latent
+        segments = list(self.ac.encoders.output_segment)
+        assert segments[:-1] == [n for n in env.get_obs_format()["policy"] if n != "depth_image"] and segments[-1].endswith("depth_image")
+
+        self.wm = WorldModel(self.scanner.num_rays, self.K, self.mdp.xi_dim, self.z_dim).to(device)
+        self.latent_dec = LatentDecoder(self.z_dim).to(device)
         self.critic = Critic(self.mdp.critic_dim()).to(device)
-        self.opt_wm = torch.optim.Adam([*self.wm.parameters(), *self.depth_head.parameters()], lr=c["lr"])
+        # E is trained by the world model (reconstruction), not by the policy loss
+        self.wm_params = [*self.wm.parameters(), *self.enc.parameters(), *self.latent_dec.parameters()]
+        self.opt_wm = torch.optim.Adam(self.wm_params, lr=c["lr"])
         self.opt_v = torch.optim.Adam(self.critic.parameters(), lr=c["lr"])
         self.fail_head = FailureHead(self.mdp.critic_dim()).to(device)
         self.opt_fail = torch.optim.Adam(self.fail_head.parameters(), lr=c["lr"])
@@ -148,13 +155,14 @@ class SuperMimicRunner:
         mdp, wm = self.mdp, self.wm
         k = self.cfg["wm_window"]
 
-        def _wm_rollout(s, a, xi_n):
-            S = unflatten_state(s[:, 0])
-            preds, logits = [], []
+        def _wm_rollout(s, a, xi_n, z0):
+            """k-step rollout from the real state and the initial latent ``z0``: states, contact logits, latents (B, k, ...)."""
+            S, z = unflatten_state(s[:, 0]), z0
+            preds, logits, zs = [], [], []
             for j in range(k):
-                S, lg = wm.step(S, a[:, j], xi_n, mdp.scan(S, noisy=False))
-                preds.append(S), logits.append(lg)
-            return tuple(torch.stack([P[i] for P in preds], 1) for i in range(6)), torch.stack(logits, 1)  # (B, k, ...)
+                S, lg, z = wm.step(S, a[:, j], xi_n, mdp.scan(S, noisy=False), z)
+                preds.append(S), logits.append(lg), zs.append(z)
+            return tuple(torch.stack([P[i] for P in preds], 1) for i in range(6)), torch.stack(logits, 1), torch.stack(zs, 1)
 
         def _wm_err(S_hat, logits, s1, contact, mask):
             std = torch.maximum(wm.out_norm.std(), self.err_floor)
@@ -170,39 +178,49 @@ class SuperMimicRunner:
         def _critic_input(S, f, phase, origin, xi_n):
             return mdp.critic_features(S, f, origin, xi_n, mdp.goal(S, f, phase, noisy=False), mdp.scan(S, noisy=False))
 
-        ac, pol_norm, depth_grad, policy_autocast = self.ac, self.pol_norm, self.cfg["depth_grad"], self.cfg["policy_autocast"]
+        def _sim_stats(S, S1, a, a_prev, f1, origin1, xi, xi_n, contact):
+            """Per collected transition: world-model input / target features (for the running normalizers) and the analytic
+            reward of the real transition (``sim/analytic_reward_abs_gap``)."""
+            return wm.inputs(S, a, xi_n, mdp.scan(S, noisy=False)), wm.targets(S, S1), mdp.reward(S1, f1, origin1, a, a_prev, xi, contact)
 
-        def _imag_core(S, o_hist, f, phase, depth, xi, xi_n, scan):
-            """One imagination step up to (and excluding) the depth rendering: policy observation in the env's format, actor,
-            world-model step, terrain scan and proprio history of the next state."""
-            obs = mdp.policy_obs(o_hist, mdp.goal(S, f, phase), depth if depth_grad else depth.detach())
+        ac, pol_norm, policy_autocast = self.ac, self.pol_norm, self.cfg["policy_autocast"]
+        d0, d1 = self.depth_slice.start, self.depth_slice.stop
+
+        def _imag_core(S, z, o_hist, f, phase, xi, xi_n, scan):
+            """One imagination step: policy observation in the env's format with the visual latent ``z`` in place of the
+            encoder output (stop-gradient into the actor), actor, world-model step (z is a world-model state, its gradient
+            path through the dynamics is kept), terrain scan and proprio history of the next state."""
+            obs = pol_norm(mdp.policy_obs(o_hist, mdp.goal(S, f, phase), z.new_zeros(z.shape[0], DEPTH_DIM)))
             with torch.autocast("cuda", dtype=torch.bfloat16, enabled=policy_autocast):  # training imagination only
-                a = ac.act_inference(pol_norm(obs)).float()
+                a = ac.actor(torch.cat((obs[:, :d0], obs[:, d1:], z.detach()), -1)).float()
             a = torch.clamp(a, -20, 20)
-            S1, logits = wm.step(S, a, xi_n, scan)
+            S1, logits, z1 = wm.step(S, a, xi_n, scan, z)
             o_hist1 = torch.cat((o_hist[:, 1:], mdp.add_noise(mdp.obs(S1, a, xi)).unsqueeze(1)), 1)
-            return a, S1, logits, mdp.scan(S1, noisy=False), o_hist1
+            return a, S1, z1, logits, mdp.scan(S1, noisy=False), o_hist1
 
         if self.cfg["compile"]:
             _wm_rollout, _wm_err = (torch.compile(fn) for fn in (_wm_rollout, _wm_err))
         if self.cfg["compile_policy"]:
             # level-batched FK keeps the graph small enough to compile (the former unrolled 30-body loop did not finish)
             _reward_term, _critic_input = (torch.compile(fn, dynamic=True) for fn in (_reward_term, _critic_input))
-            _imag_core = torch.compile(_imag_core)
+            _imag_core, _sim_stats = torch.compile(_imag_core), torch.compile(_sim_stats)
         self.wm_rollout, self.wm_err = _wm_rollout, _wm_err
-        self.reward_term, self.critic_input, self.imag_core = _reward_term, _critic_input, _imag_core
+        self.reward_term, self.critic_input, self.imag_core, self.sim_stats = _reward_term, _critic_input, _imag_core, _sim_stats
 
-    def _render_inputs(self, anchor, S_anchor, S, ctx):
-        return anchor, relative_root_pose(S_anchor, S), S[4], ctx, self.mdp.scan(S, noisy=False)
+    def rollout(self, w: dict, xi_n, z0=None):
+        """k-step world-model rollout of a window batch from the real states and ``z0`` = E(real image) at the window start
+        (computed if None): predicted states, contact logits and latents."""
+        if z0 is None:
+            with torch.no_grad():
+                z0 = self.encode_depth(w["depth"][:, 0].float())
+        return self.wm_rollout(w["s"], w["a"], xi_n, z0)
 
-    def render(self, member, anchor, S_anchor, S, ctx):
-        """Depth image at state ``S`` (tuple) rendered by ensemble member ``member`` (B,) from the real ``anchor`` image
-        taken at ``S_anchor``."""
-        return self.depth_head(member, *self._render_inputs(anchor, S_anchor, S, ctx))
-
-    def render_all(self, anchor, S_anchor, S, ctx):
-        """(M, B, 1, 18, 32): every ensemble member."""
-        return self.depth_head.forward_all(*self._render_inputs(anchor, S_anchor, S, ctx))
+    def encode_depth(self, depth):
+        """Latent of the policy's depth encoder for processed depth images (B, 1, 18, 32), normalized as in the policy
+        observation (the encoder sees exactly what it sees in ``act_inference``)."""
+        n = self.pol_norm
+        mean, std = n._mean[0, self.depth_slice], n._std[0, self.depth_slice] + n.eps
+        return self.enc(((depth.flatten(1) - mean) / std).view(-1, *DEPTH_SHAPE))
 
     def lr_at(self, it: int) -> float:
         c = self.cfg
@@ -228,7 +246,6 @@ class SuperMimicRunner:
             f, phase, origin = self.motion.current_frame()
             a_prev = reader.last_action()
             ep_step = self.unwrapped.episode_length_buf.clone()
-            scan_c = mdp.scan(S, noisy=False)
             depth = self.obs[:, self.depth_slice].view(self.N, *DEPTH_SHAPE)
             self.pol_norm.update(self.obs)
             a = self.ac.act_inference(self.pol_norm(self.obs))
@@ -242,7 +259,8 @@ class SuperMimicRunner:
             S1 = reader.state()
             contact = reader.contact()
             r_sim = rew.sum(-1).clone()
-            depth1_clean = self.depth_pipe.clean_from_sensor()  # head target: clean image of the same measurement as obs1
+            depth1_clean = self.depth_pipe.clean_from_sensor()  # reconstruction target: clean image of the same measurement as obs1
+            depth1 = obs1[:, self.depth_slice].view(self.N, *DEPTH_SHAPE).half()  # noised image at s1, read before the reset
             done_ids = done.nonzero(as_tuple=False).squeeze(-1)
             f1, phase1, origin1 = self.motion.current_frame()
             self.obs = obs1
@@ -254,11 +272,12 @@ class SuperMimicRunner:
                 "origin": origin, "r": r_sim, "f": f, "phase": phase, "ep_step": ep_step.int(), "done": done,
                 "f1": f1, "phase1": phase1, "origin1": origin1, "terminated": terminated,
                 "depth": depth.half(), "depth1_clean": depth1_clean.half(),
+                "depth1": depth1,
             })  # fmt: skip
             self.sim_steps += self.N
-            self.wm.in_norm.update(self.wm.inputs(S, a, self.xi_n, scan_c))
-            self.wm.out_norm.update(self.wm.targets(S, S1))
-            r_an = mdp.reward(S1, f1, origin1, a, a_prev, self.xi, contact)
+            wm_in, wm_tgt, r_an = self.sim_stats(S, S1, a, a_prev, f1, origin1, self.xi, self.xi_n, contact)
+            self.wm.in_norm.update(wm_in)
+            self.wm.out_norm.update(wm_tgt)
             stats["r_gap"].append((r_an - r_sim).abs().mean() / mdp.dt)
             stats["r"].append(r_sim.mean() / mdp.dt)
             if len(done_ids) > 0:
@@ -267,36 +286,33 @@ class SuperMimicRunner:
                 stats["done"].append(done.float().sum())
 
     def wm_update(self):
-        """One world-model gradient step on a k-step window batch (dynamics, contact, depth and failure losses)."""
+        """One world-model gradient step on a k-step window batch (dynamics, contact, latent, reconstruction and failure
+        losses)."""
         c = self.cfg
         w = self.buffer.sample_windows(c["wm_batch"], c["wm_window"], self.buffer.train_envs, c["wm_failure_frac"], c["wm_failure_horizon"])
         env_idx = w["env"]
-        S_hat, logits = self.wm_rollout(w["s"], w["a"], self.xi_n[env_idx])
+        Bz, k = min(c["latent_windows"], w["mask"].shape[0]), w["mask"].shape[1]
+        with torch.no_grad():
+            z0 = self.encode_depth(w["depth"][:, 0].float())
+            z_tgt = self.encode_depth(w["depth1"][:Bz].flatten(0, 1).float()).view(Bz, k, -1)
+            # before the rollout: the latent statistics are used (in place updated) inside its graph
+            self.wm.update_z_stats(z_tgt, z_tgt - torch.cat((z0[:Bz].unsqueeze(1), z_tgt[:, :-1]), 1), w["mask"][:Bz])
+        S_hat, logits, Z_hat = self.rollout(w, self.xi_n[env_idx], z0)
         loss, (e_last, bce) = self.wm_err(S_hat, logits, w["s1"], w["contact"], w["mask"])
-        k = w["mask"].shape[1]
-        Bd = min(c["depth_windows"], w["mask"].shape[0])  # the depth head is trained on the first Bd windows (memory)
-        ctx = self.cam_ctx[env_idx[:Bd]]
-        # depth head, anchored on the real (noised) image at the window start, target = CLEAN image:
-        #  (1) on the WM-PREDICTED states (detached: the head learns to be robust to state errors, the dynamics are
-        #      not shaped by the rendering loss), steps 1..k
-        S0 = unflatten_state(w["s"][:Bd, 0])
-        rep = lambda x: x.unsqueeze(1).expand(Bd, k, *x.shape[1:]).flatten(0, 1)  # noqa: E731
-        S_flat = tuple(x[:Bd].detach().flatten(0, 1) for x in S_hat)
-        M = len(self.depth_head.heads)
-        bootstrap = lambda n: torch.poisson(torch.ones(M, n, device=self.device))  # noqa: E731  (per-member resample weights)
-        pred = self.render_all(rep(w["depth"][:Bd, 0].float()), tuple(rep(x) for x in S0), S_flat, rep(ctx))  # (M, Bd*k, 1, H, W)
-        l1 = (pred - w["depth1_clean"][:Bd].flatten(0, 1).float()).abs().mean((2, 3, 4)).view(M, Bd, k)
-        depth_pred = (l1 * w["mask"][:Bd] * bootstrap(Bd).unsqueeze(-1)).sum() / (Bd * M)
-        #  (2) teacher-forced on the TRUE states with random gaps 1..horizon between anchor and target
-        pr = self.buffer.sample_pairs(c["depth_pairs"], self.horizon, self.buffer.train_envs)
-        S1_true = unflatten_state(pr["s1"])
-        pred_tf = self.render_all(pr["anchor_depth"].float(), unflatten_state(pr["s0"]), S1_true, self.cam_ctx[pr["env"]])
-        l1_tf = (pred_tf - pr["target_depth"].float()).abs().mean((2, 3, 4))  # (M, Bp)
-        depth_tf = (l1_tf * pr["valid"] * bootstrap(l1_tf.shape[1])).sum() / (pr["valid"].sum().clamp(min=1) * M)
-        total = loss + c["depth_loss_weight"] * (depth_pred + depth_tf)
+        # visual latent: k-step autoregressive error against E(real noised image) at every step, in units of the target
+        # latent variance, on the first ``latent_windows`` windows (E is detached here)
+        mask = w["mask"][:Bz]
+        z_scale = z_tgt.var((0, 1)).mean().clamp(min=1e-6)
+        lz = ((Z_hat[:Bz] - z_tgt) ** 2).mean(-1) / z_scale  # (Bz, k)
+        latent_loss = (lz * mask).sum() / Bz
+        # reconstruction of the CLEAN image from E(noised image) at the same instant: the only training signal of E
+        Br = min(c["latent_recon_images"], Bz * k)
+        rec = self.latent_dec(self.encode_depth(w["depth1"][:Bz].flatten(0, 1)[:Br].float()))
+        recon = (rec - w["depth1_clean"][:Bz].flatten(0, 1)[:Br].float()).abs().mean()
+        total = loss + c["latent_weight"] * latent_loss + c["latent_recon_weight"] * recon
         self.opt_wm.zero_grad(set_to_none=True)
         total.backward()
-        nn.utils.clip_grad_norm_([*self.wm.parameters(), *self.depth_head.parameters()], 1.0)
+        nn.utils.clip_grad_norm_(self.wm_params, 1.0)
         self.opt_wm.step()
         # failure ("continue") head on TRUE and (detached) WM-PREDICTED states of the windows, importance-weighted
         Bf = min(c["fail_windows"], w["mask"].shape[0])
@@ -320,33 +336,32 @@ class SuperMimicRunner:
         return {
             "fail_loss": fail_loss.detach() / 2, "fail_batch_pos": (label * w["mask"][:Bf].flatten()).sum() / w["mask"][:Bf].sum(),
             "wm": loss.detach() / k, "wm8": (e_last.detach() * m).sum() / m.sum().clamp(min=1), "bce": bce.detach(),
-            "depth_pred": (l1.detach() * w["mask"][:Bd]).sum() / (w["mask"][:Bd].sum() * M).clamp(min=1),
-            "depth_tf": (l1_tf.detach() * pr["valid"]).sum() / (pr["valid"].sum() * M).clamp(min=1),
+            "latent": (lz.detach() * mask).sum() / mask.sum().clamp(min=1),
+            "latent_k": (lz.detach()[:, -1] * mask[:, -1]).sum() / mask[:, -1].sum().clamp(min=1), "recon": recon.detach(),
         }  # fmt: skip
 
     @torch.no_grad()
-    def depth_gap(self, num: int = 256, images: bool = False):
-        """Depth error vs open-loop horizon step on real windows of the buffer (anchor = real image at the window start):
-        world-model rollout (``pred``, ensemble mean), true states (``tf``), "copy the anchor image" (``copy``) and the
-        ensemble disagreement (mean per-pixel std across members) on the rollout states."""
-        steps = [n for n in DEPTH_GAP_STEPS if n <= self.horizon]
+    def latent_gap(self, num: int = 256, images: bool = False):
+        """Visual-latent error vs open-loop horizon step on real windows of the buffer: the latent rolled out with the states
+        from z0 = E(real image) at the window start (``pred``) and "copy the start latent" (``copy``), squared error in units
+        of the target latent variance (target = E(real noised image)). ``images``: also the start image, the clean target
+        and the decoded target / predicted latents at the second logged step."""
+        steps = [n for n in LATENT_GAP_STEPS if n <= self.horizon]
         w = self.buffer.sample_windows(num, self.horizon, self.buffer.holdout_envs)
-        S0 = unflatten_state(w["s"][:, 0])
-        anchor, ctx = w["depth"][:, 0].float(), self.cam_ctx[w["env"]]
-        S, out, shown = S0, {}, None
+        anchor = w["depth"][:, 0].float()
+        z0 = self.encode_depth(anchor)
+        S, z, out, shown = unflatten_state(w["s"][:, 0]), z0, {}, None
         for j in range(self.horizon):
-            S, _ = self.wm.step(S, w["a"][:, j], self.xi_n[w["env"]], self.mdp.scan(S, noisy=False))
+            S, _, z = self.wm.step(S, w["a"][:, j], self.xi_n[w["env"]], self.mdp.scan(S, noisy=False), z)
             if j + 1 in steps:
-                tgt, m = w["depth1_clean"][:, j].float(), w["mask"][:, j]
-                p_all = self.render_all(anchor, S0, S, ctx)
-                p = p_all.mean(0)
-                t = self.render_all(anchor, S0, unflatten_state(w["s1"][:, j]), ctx).mean(0)
+                m = w["mask"][:, j]
                 masked_mean = lambda x: (x * m).sum() / m.sum().clamp(min=1)  # noqa: E731
-                for name, img in (("pred", p), ("tf", t), ("copy", anchor)):
-                    out[f"depth_gap/step_{j + 1}_{name}"] = masked_mean((img - tgt).abs().mean((1, 2, 3)))
-                out[f"depth_gap/step_{j + 1}_ensemble_disagreement"] = masked_mean(p_all.std(0).mean((1, 2, 3)))
+                z_tgt = self.encode_depth(w["depth1"][:, j].float())
+                z_scale = z_tgt.var(0).mean().clamp(min=1e-6)
+                for name, zz in (("pred", z), ("copy", z0)):
+                    out[f"latent_gap/step_{j + 1}_{name}"] = masked_mean(((zz - z_tgt) ** 2).mean(-1) / z_scale)
                 if images and j + 1 == steps[1 if len(steps) > 1 else 0]:
-                    shown = (anchor[:8], tgt[:8], t[:8], p[:8])
+                    shown = (anchor[:8], w["depth1_clean"][:8, j].float(), self.latent_dec(z_tgt[:8]), self.latent_dec(z[:8]))
         return (out, shown) if images else out
 
     @torch.no_grad()
@@ -358,7 +373,7 @@ class SuperMimicRunner:
         env = w["env"]
         xn = self.xi_n[env].unsqueeze(1).expand(num, k, -1).flatten(0, 1)
         args_f = (w["f1"].flatten(), w["phase1"].flatten(), w["origin1"].flatten(0, 1), xn)
-        S_hat, _ = self.wm_rollout(w["s"], w["a"], self.xi_n[env])
+        S_hat, _, _ = self.rollout(w, self.xi_n[env])
         mask = w["mask"].flatten() > 0.5
         label = w["terminated"].flatten()[mask].float()
         out = {}
@@ -427,35 +442,31 @@ class SuperMimicRunner:
         return self.buffer.starts_at(pick[:, 0], pick[:, 1], self.hist)
 
     def _imagine(self, s: dict, h: dict) -> dict:
-        """H-step imagination of the policy from buffer start states ``s`` / histories ``h`` (WM + depth ensemble member per
-        rollout + camera noise). Gradients flow as in ``policy_update`` (call under ``no_grad`` for diagnostics)."""
-        c, mdp, dev = self.cfg, self.mdp, self.device
-        B, HZ = s["f"].shape[0], self.horizon
+        """H-step imagination of the policy from buffer start states ``s`` / histories ``h``: the world model rolls out the
+        state and the visual latent from z0 = E(real image at the start). Gradients flow as in ``policy_update`` (call under
+        ``no_grad`` for diagnostics)."""
+        c, mdp = self.cfg, self.mdp
+        HZ = self.horizon
         S = unflatten_state(s["s"])
         f, phase, origin, a_prev, env_idx = s["f"], s["phase"], s["origin"], s["a_prev"], s["env"]
-        xi, xi_n, ctx = self.xi[env_idx], self.xi_n[env_idx], self.cam_ctx[env_idx]
-        depth0 = s["depth"].float()  # real image at the start state = anchor of the rendered images
+        xi, xi_n = self.xi[env_idx], self.xi_n[env_idx]
         with torch.no_grad():
+            z = self.encode_depth(s["depth"].float())  # latent of the REAL buffered (noised) image at the start state
             o_hist = mdp.obs(unflatten_state(h["s"]), h["a_prev"], self.xi[h["env"]].unsqueeze(1))
             # one noise sample per distinct historical observation (backfilled slots duplicate it, as in collection)
             noise = (2 * torch.rand_like(o_hist) - 1) * mdp.proprio_noise
             o_hist = o_hist + noise.gather(1, h["slot"].unsqueeze(-1).expand_as(noise))
-        member = torch.randint(0, len(self.depth_head.heads), (B,), device=dev)  # one ensemble member per rollout
-        member = self.depth_head.groups(member)  # constant over the horizon: one host sync instead of one per step and member
-        S0, f0, depth, scan = S, f, depth0, mdp.scan(S, noisy=False)
+        S0, f0, scan = S, f, mdp.scan(S, noisy=False)
         Ss, As, Aps, Fs, Ls = [], [], [], [], []
         for _ in range(HZ):
             Aps.append(a_prev)
-            # ---- policy observation in EXACTLY the env's policy-group format; depth = rendered image ----
-            # step 0: the REAL buffered (noised) image; later steps: the rendered clean image + the camera's noise models
-            step_args = (S, o_hist, f, phase, depth, xi, xi_n, scan)
+            # policy observation in EXACTLY the env's policy-group format, with the latent in place of the encoder output
+            step_args = (S, z, o_hist, f, phase, xi, xi_n, scan)
             if c["checkpoint_imagination"] and torch.is_grad_enabled():
                 # recompute the step in the backward pass instead of keeping its activations (same RNG state is replayed)
-                a_prev, S, logits, scan, o_hist = torch.utils.checkpoint.checkpoint(self.imag_core, *step_args, use_reentrant=False)
+                a_prev, S, z, logits, scan, o_hist = torch.utils.checkpoint.checkpoint(self.imag_core, *step_args, use_reentrant=False)
             else:
-                a_prev, S, logits, scan, o_hist = self.imag_core(*step_args)
-            with torch.set_grad_enabled(c["depth_grad"]):
-                depth = self.depth_pipe.noise_predicted(self.render(member, depth0, S0, S, ctx))
+                a_prev, S, z, logits, scan, o_hist = self.imag_core(*step_args)
             f = f + 1
             Ss.append(S), As.append(a_prev), Fs.append(f), Ls.append(logits)
         return {"S0": S0, "f0": f0, "S": S, "f": f, "phase": phase, "origin": origin, "xi": xi, "xi_n": xi_n, "Ss": Ss, "As": As, "Aps": Aps, "Fs": Fs, "Ls": Ls}
@@ -465,7 +476,7 @@ class SuperMimicRunner:
         c, mdp, dev = self.cfg, self.mdp, self.device
         B, HZ = c["pi_batch"], self.horizon
         s, h = self.sample_valid_starts(B)
-        frozen = (self.wm, self.depth_head, self.critic, self.fail_head)
+        frozen = (self.wm, self.critic, self.fail_head)
         for m_ in frozen:
             for p_ in m_.parameters():
                 p_.requires_grad_(False)
@@ -549,7 +560,7 @@ class SuperMimicRunner:
         t_start = time.time() - self.wall_offset
         t_log = time.time()
         step_acc = 0.0
-        agg: dict[str, list] = {k: [] for k in ("wm", "wm8", "bce", "depth_pred", "depth_tf", "fail_loss", "fail_batch_pos", "pi", "v", "ir", "gn", "surv")}
+        agg: dict[str, list] = {k: [] for k in ("wm", "wm8", "bce", "latent", "latent_k", "recon", "fail_loss", "fail_batch_pos", "pi", "v", "ir", "gn", "surv")}
         terms_acc: dict[str, list] = {}
         while self.it < num_learning_iterations:
             it = self.it
@@ -563,7 +574,7 @@ class SuperMimicRunner:
             self.collect(n, stats)
             for _ in range(c["wm_batches"]):
                 m = self.wm_update()
-            for k_ in ("wm", "wm8", "bce", "depth_pred", "depth_tf", "fail_loss", "fail_batch_pos"):
+            for k_ in ("wm", "wm8", "bce", "latent", "latent_k", "recon", "fail_loss", "fail_batch_pos"):
                 agg[k_].append(m[k_])
             if it >= c["wm_only_iters"]:
                 pl, vl, ir, gn, surv, terms = self.policy_update()
@@ -578,7 +589,8 @@ class SuperMimicRunner:
                 term_frac = float(sum(float(v) for v in stats["term"]) / max(sum(float(v) for v in stats["done"]), 1))
                 row = {
                     "wm/loss": mean(agg["wm"]), "wm/err_8step": mean(agg["wm8"]), "wm/contact_bce": mean(agg["bce"]),
-                    "depth/l1_predicted_states": mean(agg["depth_pred"]), "depth/l1_true_states_gap1to32": mean(agg["depth_tf"]),
+                    "latent/err_window": mean(agg["latent"]), "latent/err_8step": mean(agg["latent_k"]),
+                    "latent/recon_l1": mean(agg["recon"]),
                     "fail/bce_train": mean(agg["fail_loss"]), "fail/positive_share_in_batch": mean(agg["fail_batch_pos"]),
                     "policy/loss": mean(agg["pi"]), "policy/grad_norm": mean(agg["gn"]), "critic/value_loss": mean(agg["v"]),
                     "imagination/reward": mean(agg["ir"]), "imagination/survival": mean(agg["surv"]),
@@ -588,16 +600,11 @@ class SuperMimicRunner:
                     "perf/max_mem_gb": torch.cuda.max_memory_allocated() / 2**30,
                 }  # fmt: skip
                 images = None
-                real = self.obs[:, self.depth_slice].view(self.N, *DEPTH_SHAPE)
-                imag = self.depth_pipe.noise_predicted(self.depth_pipe.clean_from_sensor())
-                for name, x in (("real", real), ("imagination", imag)):
-                    row[f"depth_noise/{name}_mean"], row[f"depth_noise/{name}_std"] = float(x.mean()), float(x.std())
-                    row[f"depth_noise/{name}_frac_max"], row[f"depth_noise/{name}_frac_zero"] = float((x >= 1.0).float().mean()), float((x <= 0.0).float().mean())
                 if self.buffer.size >= self.horizon:
                     row.update(self.fail_calibration())
                     if self.it % (5 * c["log_interval"]) == 0:
                         row.update(self.termination_check())
-                    gap = self.depth_gap(images=self.writer is not None and self.it % (10 * c["log_interval"]) == 0)
+                    gap = self.latent_gap(images=self.writer is not None and self.it % (10 * c["log_interval"]) == 0)
                     if isinstance(gap, tuple):
                         gap, images = gap
                     row.update({k: float(v) for k, v in gap.items()})
@@ -608,12 +615,12 @@ class SuperMimicRunner:
                         if not math.isnan(v):
                             self.writer.add_scalar(k, v, self.it)
                     if images is not None:
-                        for name, img in zip(("anchor", "real_step8", "true_state_pred_step8", "open_loop_pred_step8"), images):
-                            self.writer.add_images(f"depth/{name}", img, self.it)
+                        for name, img in zip(("anchor", "clean_step8", "decoded_target_step8", "decoded_open_loop_step8"), images):
+                            self.writer.add_images(f"latent/{name}", img, self.it)
                     self.writer.flush()
-                g = lambda k: row.get(f"depth_gap/step_{k}_pred", float("nan"))  # noqa: E731
+                g = lambda k: row.get(f"latent_gap/step_{k}_pred", float("nan"))  # noqa: E731
                 print(f"it {self.it} | {wall_h:.3f} h | wm {row['wm/loss']:.4f} e8 {row['wm/err_8step']:.4f} bce {row['wm/contact_bce']:.4f} "
-                      f"| depth l1 pred {row['depth/l1_predicted_states']:.4f} tf {row['depth/l1_true_states_gap1to32']:.4f} "
+                      f"| z {row['latent/err_window']:.4f} z8 {row['latent/err_8step']:.4f} rec {row['latent/recon_l1']:.4f} "
                       f"gap@8 {g(8):.4f} @32 {g(32):.4f} | pi {row['policy/loss']:.3f} v {row['critic/value_loss']:.4f} "
                       f"imag_r {row['imagination/reward']:.3f} surv {row['imagination/survival']:.3f} | sim_r {row['sim/reward']:.3f} "
                       f"gap {row['sim/analytic_reward_abs_gap']:.4f} ep_len {row['sim/episode_length']:.1f} term {term_frac:.2f} "
@@ -643,13 +650,13 @@ class SuperMimicRunner:
     def save(self, path: str, infos=None) -> None:
         """``path``: ``OnPolicyRunner`` checkpoint format (``model_state_dict``, ``optimizer_state_dict``, the
         ``<group>_normalizer_state_dict`` of every normalizer, ``iter``, ``infos``): directly playable. Sidecar: world model,
-        depth head, failure head, critic, their optimizers and the training state (resume)."""
+        latent decoder, failure head, critic, their optimizers and the training state (resume)."""
         run_state_dict = {"model_state_dict": self.ac.state_dict(), "optimizer_state_dict": self.opt_pi.state_dict()}
         run_state_dict.update({f"{group}_normalizer_state_dict": n.state_dict() for group, n in self.normalizers.items()})
         run_state_dict.update({"iter": self.it, "infos": infos})
         torch.save(run_state_dict, path)
         torch.save({
-            "wm": self.wm.state_dict(), "depth_head": self.depth_head.state_dict(), "critic": self.critic.state_dict(),
+            "wm": self.wm.state_dict(), "latent_dec": self.latent_dec.state_dict(), "critic": self.critic.state_dict(),
             "opt_wm": self.opt_wm.state_dict(), "opt_v": self.opt_v.state_dict(), "iteration": self.it,
             "wall_time": self.wall_offset, "sim_steps": self.sim_steps, "cfg": self.cfg,
             "xi_mean": self.mdp.xi_mean, "xi_scale": self.mdp.xi_scale,
@@ -676,7 +683,7 @@ class SuperMimicRunner:
         head is initialized fresh (and warmed up for ``fail_head_warmup_iters`` iterations from the loaded iteration before it
         affects the policy)."""
         ck = torch.load(self._sidecar(path), map_location=self.device, weights_only=False)
-        self.wm.load_state_dict(ck["wm"]), self.depth_head.load_state_dict(ck["depth_head"]), self.critic.load_state_dict(ck["critic"])
+        self.wm.load_state_dict(ck["wm"]), self.latent_dec.load_state_dict(ck["latent_dec"]), self.critic.load_state_dict(ck["critic"])
         self.opt_wm.load_state_dict(ck["opt_wm"]), self.opt_v.load_state_dict(ck["opt_v"])
         self.wall_offset, self.sim_steps = ck["wall_time"], ck["sim_steps"]
         assert self.it == ck["iteration"]

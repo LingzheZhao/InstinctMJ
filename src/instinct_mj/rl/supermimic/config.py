@@ -40,19 +40,16 @@ class SuperMimicRunnerCfg:
     wm_only_iters: int = 500
     """World-model-only iterations at the start, no policy update (default 500)."""
 
-    # ---- depth head ----
-    depth_ensemble: int = 3
-    """Number of bootstrap-resampled depth heads; each imagined rollout renders with one random member. The predicted
-    clean depth is passed through the camera's noise models before the policy sees it (default 3)."""
-    depth_windows: int = 512
-    """Windows (of ``wm_batch``) that also train the depth heads, limited for memory (default 512)."""
-    depth_pairs: int = 512
-    """(anchor, target) pairs per world-model batch for the teacher-forced depth-head term (default 512)."""
-    depth_loss_weight: float = 5.0
-    """Weight of the depth-head loss in the world-model loss (default 5.0)."""
-    depth_grad: bool = False
-    """Back-propagate the policy loss through the rendered depth image into the imagined states; default False = stop-gradient
-    on the image fed to the policy (as WMP does), so the actor cannot exploit depth-head errors."""
+    # ---- visual latent (part of the world-model state) ----
+    latent_windows: int = 2048
+    """Windows (of ``wm_batch``) on which the k-step latent prediction loss is computed; every window still rolls out with
+    its latent (the dynamics take it as input), only the target images of these are encoded (default 2048)."""
+    latent_weight: float = 1.0
+    """Weight of the k-step latent prediction loss (in units of the latent variance) relative to the dynamics loss (default 1.0)."""
+    latent_recon_images: int = 512
+    """Images per world-model batch for the clean-image reconstruction loss that trains the policy's depth encoder (default 512)."""
+    latent_recon_weight: float = 1.0
+    """Weight of the reconstruction (L1) loss (default 1.0)."""
 
     # ---- failure head ----
     fail_head: bool = True
@@ -73,7 +70,7 @@ class SuperMimicRunnerCfg:
     horizon: int = 32
     """Imagination horizon H of the BPTT policy update (default 32)."""
     pi_batch: int = 1024
-    """Imagination starts per policy update; each step renders depth and runs the conv encoders, so memory heavy (default 1024)."""
+    """Imagination starts per policy update (default 1024)."""
     gamma: float = 0.99
     """Discount factor (default 0.99)."""
     lam: float = 0.95
@@ -104,7 +101,7 @@ class SuperMimicRunnerCfg:
     """``torch.compile`` the imagination step, the reward / termination and the critic-feature functions, i.e. the
     level-batched FK (default True)."""
     policy_autocast: bool = False
-    """bf16 autocast of the policy network (conv encoder + MLP) in imagination only; collection / play stay fp32 (default False)."""
+    """bf16 autocast of the actor MLP in imagination only; collection / play stay fp32 (default False)."""
     checkpoint_imagination: bool = False
     """Gradient checkpointing of every imagination step (recompute in backward): less memory, more compute (default False)."""
     heightmap_resolution: float = 0.05

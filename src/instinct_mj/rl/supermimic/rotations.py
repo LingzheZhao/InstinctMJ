@@ -10,6 +10,18 @@ import torch
 import torch.nn.functional as F
 
 
+def mm(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
+    """Small matrix product ``A @ B`` (broadcast leading dims) as an elementwise multiply + sum. ``torch.compile`` fuses it into
+    the surrounding kernels instead of launching a batched GEMM per product (3 x 3 matrices are padded to 4 x 4 GEMMs), and it
+    stays fp32 when TF32 matmuls are enabled."""
+    return (A.unsqueeze(-1) * B.unsqueeze(-3)).sum(-2)
+
+
+def mv(A: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+    """Small matrix-vector product ``A @ x`` for ``A`` (..., n, m), ``x`` (..., m) -> (..., n); see :func:`mm`."""
+    return (A * x.unsqueeze(-2)).sum(-1)
+
+
 def quat_to_mat(q: torch.Tensor) -> torch.Tensor:
     q = F.normalize(q, dim=-1)
     w, x, y, z = q.unbind(-1)
@@ -71,7 +83,7 @@ def so3_exp(v: torch.Tensor) -> torch.Tensor:
     b = torch.where(small, 0.5 - theta2 / 24, (1 - torch.cos(theta)) / (theta2 + 1e-12))
     K = skew(v)
     eye = torch.eye(3, device=v.device, dtype=v.dtype).expand(K.shape)
-    return eye + a[..., None] * K + b[..., None] * (K @ K)
+    return eye + a[..., None] * K + b[..., None] * mm(K, K)
 
 
 def so3_log(R: torch.Tensor) -> torch.Tensor:
@@ -100,7 +112,7 @@ def rot_angle_sq(Ra: torch.Tensor, Rb: torch.Tensor) -> torch.Tensor:
 
     Exactly 0 at identity and smooth (no clamped floor) at small angles, stable near pi.
     """
-    M = Ra.transpose(-1, -2) @ Rb
+    M = mm(Ra.transpose(-1, -2), Rb)
     vee = torch.stack((M[..., 2, 1] - M[..., 1, 2], M[..., 0, 2] - M[..., 2, 0], M[..., 1, 0] - M[..., 0, 1]), -1)
     s = 0.5 * torch.linalg.vector_norm(vee, dim=-1)
     c = 0.5 * (M[..., 0, 0] + M[..., 1, 1] + M[..., 2, 2] - 1)

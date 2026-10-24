@@ -14,7 +14,7 @@ import torch
 
 from instinct_mj.assets.unitree_g1 import G1_MJCF_PATH
 
-from .rotations import axis_angle_to_mat, quat_to_mat
+from .rotations import axis_angle_to_mat, mm, mv, quat_to_mat
 
 
 class G1Kinematics:
@@ -84,10 +84,10 @@ class G1Kinematics:
         for lv in self.levels:
             par, j = lv["parent_pos"], lv["joint"]
             Pp, Rp, Vp, Wp = P[:, par], Rs[:, par], V[:, par], W[:, par]
-            pi = Pp + (Rp @ lv["off_p"].unsqueeze(-1)).squeeze(-1)
-            R_off = Rp @ lv["off_R"]
-            Ri = R_off @ axis_angle_to_mat(lv["axes"], q[:, j])
-            axis_w = (R_off @ lv["axes"].unsqueeze(-1)).squeeze(-1)
+            pi = Pp + mv(Rp, lv["off_p"])
+            R_off = mm(Rp, lv["off_R"])
+            Ri = mm(R_off, axis_angle_to_mat(lv["axes"], q[:, j]))
+            axis_w = mv(R_off, lv["axes"])
             wi = Wp + axis_w * qd[:, j].unsqueeze(-1)
             vi = Vp + torch.cross(Wp, pi - Pp, dim=-1)
             P, Rs, V, W = torch.cat((P, pi), 1), torch.cat((Rs, Ri), 1), torch.cat((V, vi), 1), torch.cat((W, wi), 1)

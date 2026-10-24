@@ -2,8 +2,8 @@
 
 Pins a few envs of the Play-like eval env to the motion (+ some other motions as baselines), rolls the policy out and logs
 per step: reference time / frame, fired terminations (and per-link errors of ``link_pos_too_far``), robot vs reference
-heights of root / knees / ankles / wrists, contacts, and the world-model (1-step, 8-step) and depth-head errors on the REAL
-transitions. It also checks the reference itself against the terrain geometry (robot collision geoms placed in the reference
+heights of root / knees / ankles / wrists, contacts, and the world-model (1-step, 8-step) state and visual-latent errors on the
+REAL transitions. It also checks the reference itself against the terrain geometry (robot collision geoms placed in the reference
 pose, contacts against the terrain), and re-runs the pinned envs with the tracking terminations disabled.
 
     .venv/bin/python tests/supermimic/diagnose_failure.py <run>/model_4000.pt --motion-folder ~/Datasets/20251116_50cm_kneeClimbStep1
@@ -21,10 +21,10 @@ import numpy as np
 import torch
 
 from instinct_mj.rl.supermimic.depth import DepthPipeline
-from instinct_mj.rl.supermimic.mdp import flatten_state, relative_root_pose, unflatten_state
-from instinct_mj.rl.supermimic.networks import DepthEnsemble, FailureHead, WorldModel
+from instinct_mj.rl.supermimic.mdp import DEPTH_DIM, flatten_state, unflatten_state
+from instinct_mj.rl.supermimic.networks import FailureHead, LatentDecoder, WorldModel
 from instinct_mj.rl.supermimic.rotations import rot_angle_sq
-from instinct_mj.rl.supermimic.sim import SimReader, build_mdp, camera_context
+from instinct_mj.rl.supermimic.sim import SimReader, build_mdp
 from instinct_mj.scripts.supermimic.evaluate import EvalArgs, Evaluator
 
 parser = argparse.ArgumentParser()
@@ -54,13 +54,13 @@ mdp.xi_mean, mdp.xi_scale = sidecar["xi_mean"].to(dev), sidecar["xi_scale"].to(d
 reader = SimReader(env)
 xi = reader.context(mdp)
 xi_n = mdp.normalize_xi(xi)
-cam_ctx = camera_context(env)
 depth_pipe = DepthPipeline(env)
-wm = WorldModel(scanner.num_rays, len(reader.contact_body_ids), mdp.xi_dim).to(dev)
+encode = ev.runner.encode_depth  # policy depth encoder E (normalized as in the policy observation)
+wm = WorldModel(scanner.num_rays, len(reader.contact_body_ids), mdp.xi_dim, ev.runner.z_dim).to(dev)
 wm.load_state_dict(sidecar["wm"])
-heads = DepthEnsemble(sidecar["cfg"]["depth_ensemble"], scanner.num_rays).to(dev)
-heads.load_state_dict(sidecar["depth_head"])
-wm.eval(), heads.eval()
+dec = LatentDecoder(ev.runner.z_dim).to(dev)
+dec.load_state_dict(sidecar["latent_dec"])
+wm.eval(), dec.eval()
 fail_head = None
 if "fail_head" in sidecar:  # checkpoints written after the failure head was added
     fail_head = FailureHead(mdp.critic_dim()).to(dev)
@@ -158,7 +158,7 @@ for e in (0, 1, 4, 5):
         touch = [body_names[i] for i in (log["contact"][s, e] > 1.0).nonzero().flatten().tolist()]
         print(f"  step {s:4d} t_ref {float(log['t_ref'][s, e]):.2f}: {touch}")
 
-# ---- world-model / depth-head errors on the real transitions ----
+# ---- world-model state / visual-latent errors on the real transitions ----
 @torch.no_grad()
 def wm_errors():
     S_all, S1_all, a_all = log["S"].to(dev), log["S1"].to(dev), log["a"].to(dev)
@@ -171,30 +171,29 @@ def wm_errors():
         d_i = first_done.to(dev)[e_i]
         near = (d_i - t_i) <= 30  # within 30 steps (0.6 s) of the finishing step
         S0 = unflatten_state(S_all[t_i, e_i])
-        S1p, _ = wm.step(S0, a_all[t_i, e_i], xi_n[e_i], mdp.scan(S0, noisy=False))
+        S1p, _, z1p = wm.step(S0, a_all[t_i, e_i], xi_n[e_i], mdp.scan(S0, noisy=False), encode(anch[t_i, e_i]))
         S1 = unflatten_state(S1_all[t_i, e_i])
         e1 = torch.stack([(S1p[0] - S1[0]).norm(dim=-1), rot_angle_sq(S1p[1], S1[1]).sqrt(), (S1p[4] - S1[4]).abs().mean(-1), (S1p[5] - S1[5]).abs().mean(-1)], -1)
-        img = heads.forward_all(anch[t_i, e_i], relative_root_pose(S0, S1p), S1p[4], cam_ctx[e_i], mdp.scan(S1p, noisy=False)).mean(0)
+        img = dec(z1p)  # decoded predicted latent
         dd1 = torch.stack([(img - clean1[t_i, e_i]).abs().mean((1, 2, 3)), (anch[t_i, e_i] - clean1[t_i, e_i]).abs().mean((1, 2, 3))], -1)
         # 8- and 32-step open-loop windows with the real actions
         res = {}
         for H in (8, 32):
             ok = torch.tensor([t + H <= int(first_done[e]) and bool(valid[t:t + H, e].all()) for t, e in pairs], device=dev)
             tw, ew = t_i[ok], e_i[ok]
-            S = unflatten_state(S_all[tw, ew])
-            S_start = S
+            S, z = unflatten_state(S_all[tw, ew]), encode(anch[tw, ew])
             for j in range(H):
-                S, _ = wm.step(S, a_all[tw + j, ew], xi_n[ew], mdp.scan(S, noisy=False))
+                S, _, z = wm.step(S, a_all[tw + j, ew], xi_n[ew], mdp.scan(S, noisy=False), z)
             Sr = unflatten_state(S1_all[tw + H - 1, ew])
             eH = torch.stack([(S[0] - Sr[0]).norm(dim=-1), rot_angle_sq(S[1], Sr[1]).sqrt(), (S[4] - Sr[4]).abs().mean(-1), (S[5] - Sr[5]).abs().mean(-1)], -1)
-            imgH = heads.forward_all(anch[tw, ew], relative_root_pose(S_start, S), S[4], cam_ctx[ew], mdp.scan(S, noisy=False)).mean(0)
+            imgH = dec(z)
             dH = torch.stack([(imgH - clean1[tw + H - 1, ew]).abs().mean((1, 2, 3)), (anch[tw, ew] - clean1[tw + H - 1, ew]).abs().mean((1, 2, 3))], -1)
             res[H] = (eH.cpu(), dH.cpu(), near[ok].cpu())
         out[group] = (e1.cpu(), dd1.cpu(), near.cpu(), res)
     return out
 
 res = wm_errors()
-print("\n=== world model on REAL transitions: root pos [m] / root rot [rad] / joint pos [rad] / joint vel [rad/s] mean errors; depth head L1 vs CLEAN image (head | copy-anchor) ===")
+print("\n=== world model on REAL transitions: root pos [m] / root rot [rad] / joint pos [rad] / joint vel [rad/s] mean errors; decoded latent L1 vs CLEAN image (world model | copy-anchor) ===")
 print("group  subset                       n  |   pos     rot     q       qd    | depth 1-step")
 for group in ("kneel", "others"):
     e1, dd1, near, res_g = res[group]
@@ -215,7 +214,8 @@ for group in ("kneel", "others"):
 # ---- imagination optimism: does the world model think the policy survives where the real robot does not? ----
 @torch.no_grad()
 def imagination_vs_real(starts=(60, 80, 100, 110, 120, 140), H=32, real_depth=False):
-    ac, norm = ev.runner.alg.actor_critic, ev.runner.normalizers["policy"]
+    ac, norm = ev.runner.ac, ev.runner.normalizers["policy"]
+    d0, d1 = ev.runner.depth_slice.start, ev.runner.depth_slice.stop
     rows = [(e, t) for e in range(N) for t in starts if t + 1 < int(first_done[e])]
     # batched imagination
     es = torch.tensor([r[0] for r in rows], device=dev)
@@ -233,22 +233,19 @@ def imagination_vs_real(starts=(60, 80, 100, 110, 120, 140), H=32, real_depth=Fa
         tk = (ts - k).clamp(min=0)
         hist.append(mdp.obs(unflatten_state(log["S"].to(dev)[tk, es]), log["a"].to(dev)[(tk - 1).clamp(min=0), es] * (tk > 0)[:, None], xi[es]))
     o_hist = mdp.add_noise(torch.stack(hist, 1))
-    depth0 = log["depth_anchor"].to(dev)[ts, es]
-    member = torch.randint(0, len(heads.heads), (len(rows),), device=dev)
+    z = encode(log["depth_anchor"].to(dev)[ts, es])
     scan = mdp.scan(S, noisy=False)
-    S0, depth = S, depth0
     fell = torch.full((len(rows),), H, device=dev)
     survive = torch.ones(len(rows), device=dev)
     survive_soft = torch.ones(len(rows), device=dev)
     for k in range(H):
-        obs = mdp.policy_obs(o_hist, mdp.goal(S, f, phase), depth)
-        a = torch.clamp(ac.act_inference(norm(obs)), -20, 20)
-        S, _ = wm.step(S, a, xi_n[es], scan)
+        # actor MLP on the policy observation with the latent in place of the encoder output (as in the runner)
+        obs = norm(mdp.policy_obs(o_hist, mdp.goal(S, f, phase), z.new_zeros(z.shape[0], DEPTH_DIM)))
+        a = torch.clamp(ac.actor(torch.cat((obs[:, :d0], obs[:, d1:], z), -1)), -20, 20)
+        S, _, z = wm.step(S, a, xi_n[es], scan, z)
         scan = mdp.scan(S, noisy=False)
-        if real_depth:  # feed the REAL (noised) depth image of that future step instead of the head's prediction
-            depth = log["depth_anchor"].to(dev)[(ts + k + 1).clamp(max=T - 1), es]
-        else:
-            depth = depth_pipe.noise_predicted(heads(member, depth0, relative_root_pose(S0, S), S[4], cam_ctx[es], scan))
+        if real_depth:  # feed the latent of the REAL (noised) depth image of that future step instead of the predicted one
+            z = encode(log["depth_anchor"].to(dev)[(ts + k + 1).clamp(max=T - 1), es])
         o_hist = torch.cat((o_hist[:, 1:], mdp.add_noise(mdp.obs(S, a, xi[es])).unsqueeze(1)), 1)
         f = torch.minimum(f + 1, f_end)
         term = mdp.hard_termination(S, f, origin)
@@ -261,7 +258,7 @@ def imagination_vs_real(starts=(60, 80, 100, 110, 120, 140), H=32, real_depth=Fa
     return es.cpu(), ts.cpu(), fell.cpu(), real_fail_in.cpu(), (1 - survive_soft).cpu(), ((1 - survive).cpu() if fail_head is not None else None)
 
 
-for tag, rd in (("depth = depth head prediction (as in training)", False), ("depth = REAL image of each future step (isolates dynamics)", True)):
+for tag, rd in (("vision = world-model latent (as in training)", False), ("vision = latent of the REAL image of each future step (isolates dynamics)", True)):
     es_, ts_, fell_, real_, p_soft_, p_head_ = imagination_vs_real(real_depth=rd)
     print(f"\n=== imagination (world model + policy) vs reality from the same real start states, horizon 32; {tag} ===")
     print("group    n   imagined terminates within 32 steps   real terminates within 32 steps   mean imagined step of termination (when it does)")
@@ -287,7 +284,7 @@ with torch.no_grad():
         t_i = torch.tensor([p[0] for p in pairs], device=dev)
         e_i = torch.tensor([p[1] for p in pairs], device=dev)
         S0 = unflatten_state(log["S"].to(dev)[t_i, e_i])
-        _, lg = wm.step(S0, log["a"].to(dev)[t_i, e_i], xi_n[e_i], mdp.scan(S0, noisy=False))
+        _, lg, _ = wm.step(S0, log["a"].to(dev)[t_i, e_i], xi_n[e_i], mdp.scan(S0, noisy=False), encode(log["depth_anchor"].to(dev)[t_i, e_i]))
         label = (log["contact"].to(dev)[t_i, e_i][:, cb] > 1.0).float()
         pred = torch.sigmoid(lg)
         pos = label > 0.5

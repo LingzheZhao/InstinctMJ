@@ -21,9 +21,14 @@ import numpy as np
 import torch
 
 from instinct_mj.rl.supermimic.depth import DepthPipeline
-from instinct_mj.rl.supermimic.mdp import CAMERA_CTX_DIM, DEPTH_SHAPE, GOAL_POS_NOISE, GOAL_ROT_NOISE, PROPRIO_NOISE
-from instinct_mj.rl.supermimic.rotations import quat_to_mat, so3_exp, yaw_mat
-from instinct_mj.rl.supermimic.sim import SimReader, build_mdp, camera_context
+from instinct_mj.rl.supermimic.mdp import (
+    DEPTH_SHAPE,
+    GOAL_POS_NOISE,
+    GOAL_ROT_NOISE,
+    PROPRIO_NOISE,
+)
+from instinct_mj.rl.supermimic.rotations import quat_to_mat, yaw_mat
+from instinct_mj.rl.supermimic.sim import SimReader, build_mdp
 from instinct_mj.scripts.supermimic.common import TASK_ID, build_env_cfg, make_vec_env
 
 parser = argparse.ArgumentParser()
@@ -47,7 +52,7 @@ mgr = env.scene["motion_reference"]
 xi = rd.context(mdp)
 mdp.set_xi_stats(xi)
 depth_pipe = DepthPipeline(env)
-real_depth, imag_depth, clean_depth = [], [], []
+real_depth, clean_depth = [], []
 link_ids = robot.find_bodies(mgr.cfg.link_of_interests, preserve_order=True)[0]
 
 stats: dict[str, list[torch.Tensor]] = {}
@@ -104,16 +109,6 @@ for name, mine in zip(("projected_gravity", "base_ang_vel", "joint_pos", "joint_
     log(f"noise range: {name}", torch.tensor(env_range - mine), 0.0, 0.0)
 log("noise range: position_ref", torch.tensor(float(terms_cfg["position_ref"].noise.n_max) - GOAL_POS_NOISE), 0.0, 0.0)
 log("noise range: rotation_ref", torch.tensor(float(terms_cfg["rotation_ref"].noise.n_max) - GOAL_ROT_NOISE), 0.0, 0.0)
-
-# ---- camera mount context: the fitted rotation vector must reproduce the randomized ray directions ----
-cam = env.scene["camera"]
-ctx = camera_context(env)
-d_nom = cam._compute_pinhole_rays_from_intrinsics(cam._camera_data.intrinsic_matrices)[1]
-d_rec = (so3_exp(ctx[:, 3:])[:, None] @ d_nom.unsqueeze(-1)).squeeze(-1)
-log("camera ctx: rotated nominal rays vs actual rays", d_rec - cam.ray_directions, 3e-3, 1e-3)
-log("camera ctx: position offset vs ray starts", cam.ray_starts - ctx[:, None, :3], 1e-6, 1e-7)
-fail_if(ctx.shape[-1] != CAMERA_CTX_DIM or float(ctx.abs().max()) == 0.0, "camera context is empty")
-print(f"camera ctx: |pos| max {ctx[:, :3].abs().max().item():.4f} m, |rotvec| max {ctx[:, 3:].abs().max().item():.4f} rad")
 
 # ---- stepping ----
 env.reset()
@@ -241,13 +236,12 @@ for step in range(args.steps):
         mine_flat = mdp.policy_obs(torch.stack(obs_hist, 1), goal, depth_env)
         keep = torch.ones(env_flat.shape[-1], dtype=torch.bool, device=dev)
         d0 = sum(pol[n].flatten(1).shape[-1] for n in order[: order.index("depth_image")])
-        keep[d0 : d0 + depth_env[0].numel()] = False  # depth is compared through the depth head, not here
+        keep[d0 : d0 + depth_env[0].numel()] = False  # depth enters imagination as the encoder latent, not compared here
         log("policy obs: assembled flat vector vs env (all but depth)", (mine_flat - env_flat)[ok_hist][:, keep], 1e-4, 1e-5)
         fail_if(order != ["joint_pos_ref", "joint_vel_ref", "position_ref", "rotation_ref", "depth_image", "projected_gravity", "base_ang_vel", "joint_pos", "joint_vel", "last_action"], f"unexpected policy term order {order}")
 
-    # ---- depth noise: real noised images vs imagination-noised images of the clean sensor measurement ----
-    clean = depth_pipe.clean_from_sensor()
-    real_depth.append(depth_env.clone()), clean_depth.append(clean), imag_depth.append(depth_pipe.noise_predicted(clean))
+    # ---- depth images: real noised observation vs the clean image of the same measurement (reconstruction target) ----
+    real_depth.append(depth_env.clone()), clean_depth.append(depth_pipe.clean_from_sensor())
 
     # ---- height scan (vs direct terrain ray casts from the root, the env sensor semantics) ----
     if step % 10 == 0:
@@ -314,13 +308,11 @@ for name, errs in stats.items():
     fail_if(mx > max_tol, f"{name}: max err {mx:.3e} > {max_tol:.3e}")
     if mean_tol is not None:
         fail_if(mean > mean_tol, f"{name}: mean err {mean:.3e} > {mean_tol:.3e}")
-real_d, imag_d, clean_d = (torch.cat(x) for x in (real_depth, imag_depth, clean_depth))
+real_d, clean_d = (torch.cat(x) for x in (real_depth, clean_depth))
 stat = lambda x: (x.mean().item(), x.std().item(), (x >= 1.0).float().mean().item(), (x <= 0.0).float().mean().item())  # noqa: E731
 print("depth image statistics (mean, std, frac==max, frac==0):")
-for name, x in (("clean", clean_d), ("real noised (env obs)", real_d), ("imagination noised (from clean)", imag_d)):
+for name, x in (("clean", clean_d), ("real noised (env obs)", real_d)):
     print(f"  {name:34s} " + " ".join(f"{v:.4f}" for v in stat(x)))
-for i, (name, tol_) in enumerate((("mean", 0.03), ("std", 0.03), ("frac==max", 0.05), ("frac==0", 0.02))):
-    fail_if(abs(stat(real_d)[i] - stat(imag_d)[i]) > tol_, f"depth noise statistics differ ({name}): real {stat(real_d)[i]:.4f} vs imagination {stat(imag_d)[i]:.4f}")
 fail_if((real_d - clean_d).abs().mean().item() < 1e-3, "the env's depth observation is not noised")
 ph = torch.cat(phases)
 print(f"reference phases |x - round(x)|: nonzero fraction {(ph > 1e-3).float().mean().item():.2f}, max {ph.max().item():.3f}")

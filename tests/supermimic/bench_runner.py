@@ -30,7 +30,7 @@ os.environ.setdefault("MUJOCO_GL", "egl")
 torch.backends.cudnn.benchmark = args.cudnn_benchmark
 cfg = load_instinct_rl_cfg(TASK_ID)
 cfg.device = "cuda:0"
-defaults = dict(buffer_steps=150, warmup_steps=64, wm_batch=512, depth_windows=128, depth_pairs=128, fail_windows=128, pi_batch=256,
+defaults = dict(buffer_steps=150, warmup_steps=64, wm_batch=512, fail_windows=128, pi_batch=256,
                 wm_only_iters=0, compile=True)  # fmt: skip
 for k, v in defaults.items():
     setattr(cfg, k, v)
