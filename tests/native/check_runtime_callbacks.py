@@ -10,16 +10,41 @@ from pathlib import Path
 import torch
 
 
+def write_default_pose_motion(path):
+    """Fresh native-schema input from the selected asset, only for clock diagnostics."""
+    import numpy as np
+    import mujoco
+    from mjlab.utils.string import resolve_expr
+    from instinct_mj.assets.unitree_g1 import G1_29DOF_TORSOBASE_POPSICLE_CFG
+    asset = G1_29DOF_TORSOBASE_POPSICLE_CFG
+    model = asset.spec_fn().compile()
+    free = [i for i in range(model.njnt) if model.jnt_type[i] == mujoco.mjtJoint.mjJNT_FREE]
+    assert len(free) == 1 and model.body(model.jnt_bodyid[free[0]]).name == 'torso_link'
+    names = [model.joint(i).name for i in range(model.njnt) if i not in free]
+    pose = resolve_expr(asset.init_state.joint_pos, names, 0.)
+    path.mkdir(parents=True, exist_ok=False)
+    np.savez(path/'default_pose.npz', framerate=50., joint_names=np.array(names),
+        joint_pos=np.tile(pose, (101, 1)), base_pos_w=np.tile(asset.init_state.pos, (101, 1)),
+        base_quat_w=np.tile(asset.init_state.rot, (101, 1)))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('--task', required=True)
-    parser.add_argument('--motion-folder', required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument('--motion-folder')
+    source.add_argument('--synthetic-default-pose', action='store_true',
+                        help='fresh asset-default input; lifecycle diagnostic, never skill evidence')
     parser.add_argument('--terrain-metadata')
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--out', type=Path, required=True, help='fresh output root')
     args = parser.parse_args()
     if args.out.exists():
         parser.error('the output root must not exist')
+    args.out.mkdir(parents=True)
+    if args.synthetic_default_pose:
+        args.motion_folder = str(args.out/'inputs')
+        write_default_pose_motion(Path(args.motion_folder))
     from instinct_mj.tasks.shadowing.factory import make_shadowing_env_cfg
     from instinct_mj.tasks.registry import load_env_cls
     from instinct_mj.rl.vecenv_wrapper import InstinctRlVecEnvWrapper
@@ -27,8 +52,8 @@ def main():
         terrain_metadata=args.terrain_metadata, num_envs=4, physics_dt=.005, decimation=4)
     cfg.seed = 42
     cfg.episode_length_s = .06  # ensure real automatic resets inside the eight controls
-    args.out.mkdir(parents=True)
     result = {'task':args.task, 'motion_folder':args.motion_folder, 'terrain_metadata':args.terrain_metadata,
+        'synthetic_default_pose':args.synthetic_default_pose,
         'num_envs':4, 'physics_dt':.005, 'decimation':4, 'controls':8,
         'episode_length_s':.06, 'seed':42, 'device':args.device,
         'physics_callbacks':0, 'terminal_callbacks':0, 'callback_failures':[], 'skipped':[]}
