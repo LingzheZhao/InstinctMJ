@@ -23,7 +23,7 @@ def write_default_pose_motion(path):
     names = [model.joint(i).name for i in range(model.njnt) if i not in free]
     pose = resolve_expr(asset.init_state.joint_pos, names, 0.)
     path.mkdir(parents=True, exist_ok=False)
-    np.savez(path/'default_pose.npz', framerate=50., joint_names=np.array(names),
+    np.savez(path/'default_pose_retargetted.npz', framerate=50., joint_names=np.array(names),
         joint_pos=np.tile(pose, (101, 1)), base_pos_w=np.tile(asset.init_state.pos, (101, 1)),
         base_quat_w=np.tile(asset.init_state.rot, (101, 1)))
 
