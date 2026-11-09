@@ -1,4 +1,5 @@
-# The reset/step lifecycle is adapted from mjlab 1.6.0 ManagerBasedRlEnv.
+# The reset/step lifecycle is adapted from mjlab 1.6.0 ManagerBasedRlEnv, with the scoped post-reset
+# control write of later mjlab (Scene.write_data_to_sim(env_ids)).
 # Copyright 2025, The mjlab Developers. Licensed under the Apache License, Version 2.0;
 # see LICENSES/mjlab-Apache-2.0.txt. Instinct-specific extensions retain this project's license.
 from __future__ import annotations
@@ -133,7 +134,9 @@ class InstinctRlEnv(ManagerBasedRlEnv):
             self.seed(seed)
         self.extras["log"] = dict()
         self._reset_idx(env_ids)
-        self.scene.write_data_to_sim()
+        # Only the reset worlds get controls written and actuator delay histories backfilled;
+        # delayed position actuators hold the post-reset pose until the first action.
+        self.scene.write_data_to_sim(env_ids=env_ids)
         self.sim.forward()
         # Scoped to env_ids so a partial reset does not advance stateful commands in the
         # other envs.
@@ -148,7 +151,7 @@ class InstinctRlEnv(ManagerBasedRlEnv):
         return self.obs_buf, self.extras
 
     def step(self, action: torch.Tensor):
-        """Run the pinned mjlab 1.6 lifecycle with explicit Instinct extension points.
+        """Run the mjlab 1.6 lifecycle with explicit Instinct extension points.
 
         Each actual substep publishes its measurement hook. A zero-time scene
         refresh after integration makes termination/reward see the same fresh
@@ -200,7 +203,7 @@ class InstinctRlEnv(ManagerBasedRlEnv):
         if self.cfg.auto_reset and len(reset_env_ids) > 0:
             self.recorder_manager.record_pre_reset(reset_env_ids)
             self._reset_idx(reset_env_ids)
-            self.scene.write_data_to_sim()
+            self.scene.write_data_to_sim(env_ids=reset_env_ids)
 
         # Preserve the SDK post-event/reset forward as well: events and reset
         # may have written state after the endpoint was measured.
