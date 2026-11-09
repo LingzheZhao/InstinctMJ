@@ -63,8 +63,8 @@ class Scene:
     def update(self, dt):
         self.env.events.append(('scene.update', dt))
         self.env.reference_time += dt
-    def write_data_to_sim(self):
-        self.env.events.append('write')
+    def write_data_to_sim(self, env_ids=None):
+        self.env.events.append('write' if env_ids is None else ('write', env_ids.tolist()))
 
 
 class Terminations(Manager):
@@ -245,7 +245,10 @@ def test_reset_uses_sdk_manager_order_once_without_replacing_native_methods():
 
 def test_lifecycle_explicitly_targets_the_installed_pinned_sdk():
     from importlib.metadata import version
+    from mjlab.scene import Scene
+    # mjlab main at the pinned source still reports 1.6.0; the scoped write is what this lifecycle needs.
     assert version('mjlab') == '1.6.0'
+    assert 'env_ids' in inspect.signature(Scene.write_data_to_sim).parameters
     assert InstinctRlEnv.reset is not ManagerBasedRlEnv.reset
     assert InstinctRlEnv.step is not ManagerBasedRlEnv.step
     module = Path(inspect.getfile(InstinctRlEnv)).read_text()
@@ -283,3 +286,15 @@ def test_partial_reset_keeps_unselected_real_delay_history_and_lag_schedule():
     state, events = torch.get_rng_state(), len(env.events)
     assert env._compute_observations(update_history=True, env_ids=torch.tensor([], dtype=torch.long)) is env.obs_buf
     assert torch.equal(state, torch.get_rng_state()) and len(env.events) == events
+
+
+def test_post_reset_control_writes_are_scoped_to_the_reset_worlds():
+    env = CpuLifecycleEnv()
+    env.reset(env_ids=torch.tensor([1]))
+    assert env.events.count(('write', [1])) == 1 and 'write' not in env.events
+    env.events.clear()
+    env.step(torch.zeros(3, 2))
+    # Four physics substeps write every world; the automatic reset of world 0 writes only world 0.
+    assert env.events.count('write') == 4
+    assert env.events.count(('write', [0])) == 1
+    assert env.events.index(('write', [0])) > env.events.index(('termination.reset', [0]))
