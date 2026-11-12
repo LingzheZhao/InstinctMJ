@@ -26,6 +26,8 @@ venv/
 !/tests/test_runtime_contracts.py
 !/tests/test_runtime_lifecycle.py
 !/tests/test_reference_clock.py
+!/tests/test_research_mjlab_events.py
+!/tests/test_sensor_cache_listener.py
 !/tests/native/
 /tests/native/*
 !/tests/native/check_runtime_callbacks.py
