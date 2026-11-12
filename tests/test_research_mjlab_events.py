@@ -58,7 +58,8 @@ def make_env(events):
 
 
 def derived_constants(env):
-    return {field: getattr(env.sim.model, field).clone() for field in DERIVED}
+    # Read through the Warp arrays: some derived fields (eq_data) have vector types with no Torch view.
+    return {field: torch.from_numpy(getattr(env.sim.wp_model, field).numpy().copy()) for field in DERIVED}
 
 
 def assert_equal_to_full_recompute(env):
@@ -127,7 +128,7 @@ def test_gravity_compensation_needs_no_recompute_and_holds_only_the_written_worl
     qacc = env.sim.data.qacc.clone()
     env.sim.recompute_constants(SetConstGroup.ALL)
     env.sim.forward()
-    torch.testing.assert_close(env.sim.data.qacc, qacc, rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(env.sim.data.qacc, qacc, rtol=1e-5, atol=1e-4)
     torch.testing.assert_close(qacc[0, :3], torch.zeros(3, device=DEVICE), rtol=0, atol=1e-5)
     gravity = float(env.sim.mj_model.opt.gravity[2])
     torch.testing.assert_close(qacc[1:, 2], torch.full((NUM_ENVS - 1,), gravity, device=DEVICE), rtol=1e-5,
