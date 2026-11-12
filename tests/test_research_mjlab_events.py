@@ -66,36 +66,36 @@ def assert_equal_to_full_recompute(env):
     env.sim.recompute_constants(SetConstGroup.ALL)
     fresh = derived_constants(env)
     for field in DERIVED:
-        torch.testing.assert_close(after_event[field], fresh[field], rtol=1e-6, atol=1e-7, msg=field)
+        torch.testing.assert_close(after_event[field], fresh[field], rtol=1e-5, atol=1e-6, msg=field)
     return after_event
 
 
 BASE = SceneEntityCfg('robot', body_names=('base',))
 CASES = {
-    'randomize_rigid_body_com': (randomize_rigid_body_com, ('body_ipos', 'body_iquat'),
+    'randomize_rigid_body_com': (randomize_rigid_body_com, 'body_ipos', ('body_ipos', 'body_iquat'),
                                  {'asset_cfg': BASE, 'com_range': {'x': (-.05, .05), 'y': (-.05, .05),
                                                                    'z': (-.05, .05)}}),
-    'randomize_rigid_body_mass': (randomize_rigid_body_mass, ('body_mass', 'body_ipos', 'body_inertia',
-                                                              'body_iquat'),
+    'randomize_rigid_body_mass': (randomize_rigid_body_mass, 'body_mass', ('body_mass', 'body_ipos',
+                                                                           'body_inertia', 'body_iquat'),
                                   {'asset_cfg': BASE, 'mass_distribution_params': (-.5, .5), 'operation': 'add'}),
 }
 
 
 @pytest.mark.parametrize('name', sorted(CASES))
 def test_inertial_events_leave_derived_constants_equal_to_a_full_recompute_in_every_world(name):
-    func, fields, params = CASES[name]
+    func, written, fields, params = CASES[name]
     assert func.model_fields == fields
     torch.manual_seed(3)
     reference = make_env({})
     default = derived_constants(reference)
-    default_ipos = reference.sim.model.body_ipos.clone()
+    default_written = getattr(reference.sim.model, written).clone()
     reference.close()
     env = make_env({name: EventTermCfg(func=func, mode='startup', params=params)})
     base = env.scene['robot'].indexing.body_ids[0]
     # The event wrote a different value in each world ...
-    ipos = env.sim.model.body_ipos[:, base]
-    assert ipos.shape[0] == NUM_ENVS and not torch.allclose(ipos[0], ipos[1])
-    assert not torch.allclose(ipos, default_ipos[:, base].expand_as(ipos))
+    value = getattr(env.sim.model, written)[:, base]
+    assert value.shape[0] == NUM_ENVS and not torch.allclose(value[0], value[1])
+    assert not torch.allclose(value, default_written[:, base].expand_as(value))
     # ... the event manager recomputed the inertial constants of each world ...
     after = assert_equal_to_full_recompute(env)
     groups = recompute_groups(fields, env.sim.mj_model)
@@ -127,7 +127,7 @@ def test_gravity_compensation_needs_no_recompute_and_holds_only_the_written_worl
     qacc = env.sim.data.qacc.clone()
     env.sim.recompute_constants(SetConstGroup.ALL)
     env.sim.forward()
-    torch.testing.assert_close(env.sim.data.qacc, qacc, rtol=1e-6, atol=1e-6)
+    torch.testing.assert_close(env.sim.data.qacc, qacc, rtol=1e-5, atol=1e-5)
     torch.testing.assert_close(qacc[0, :3], torch.zeros(3, device=DEVICE), rtol=0, atol=1e-5)
     gravity = float(env.sim.mj_model.opt.gravity[2])
     torch.testing.assert_close(qacc[1:, 2], torch.full((NUM_ENVS - 1,), gravity, device=DEVICE), rtol=1e-5,

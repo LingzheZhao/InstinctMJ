@@ -4,12 +4,14 @@ mjlab_research's Simulation notifies its data listeners after every step, forwar
 registers the scene's sensor-cache invalidation as one. The first test runs a real InstinctRlEnv (MuJoCo Warp on the
 CPU unless CUDA is available); the second reads the motion reference manager's own frames on the CPU.
 """
+from dataclasses import dataclass
+
 import mujoco
 import torch
 from mjlab.entity import EntityCfg
 from mjlab.managers import EventTermCfg, ObservationGroupCfg, ObservationTermCfg, RewardTermCfg
 from mjlab.scene import SceneCfg
-from mjlab.sensor import BuiltinSensorCfg, ObjRef
+from mjlab.sensor import Sensor, SensorCfg
 from mjlab.sim.sim import SimulationCfg
 
 from instinct_mj.envs import InstinctRlEnv, InstinctRlEnvCfg
@@ -26,11 +28,39 @@ BOX_XML = """
   </worldbody>
 </mujoco>
 """
-SENSOR = 'box/box_position'
+SENSOR = 'box_height'
+
+
+@dataclass(kw_only=True)
+class HeightSensorCfg(SensorCfg):
+    def build(self):
+        return HeightSensor(self)
+
+
+class HeightSensor(Sensor[torch.Tensor]):
+    """The box's world height, copied out of the simulation data as mjlab's contact sensor copies its data.
+
+    mjlab's builtin sensors return a view of sensordata, which a stale cache would still follow.
+    """
+
+    def __init__(self, cfg):
+        super().__init__()
+        self.cfg = cfg
+
+    def edit_spec(self, scene_spec, entities):
+        del scene_spec, entities
+
+    def initialize(self, mj_model, model, data, device):
+        del model, device
+        self._sim_data = data
+        self._body = mj_model.body('box/box').id
+
+    def _compute_data(self):
+        return self._sim_data.xpos[:, self._body, 2:3].clone()
 
 
 def sensed_height(env):
-    return env.scene[SENSOR].data[:, 2:3].clone()
+    return env.scene[SENSOR].data.clone()
 
 
 def lift_box(env, env_ids):
@@ -47,8 +77,7 @@ def test_observation_after_a_step_event_write_sees_the_written_state():
     cfg = InstinctRlEnvCfg(
         scene=SceneCfg(num_envs=NUM_ENVS, env_spacing=3.,
                        entities={'box': EntityCfg(spec_fn=lambda: mujoco.MjSpec.from_string(BOX_XML))},
-                       sensors=(BuiltinSensorCfg(name='box_position', sensor_type='framepos',
-                                                 obj=ObjRef(type='body', name='box', entity='box')),)),
+                       sensors=(HeightSensorCfg(name=SENSOR),)),
         observations={'obs': ObservationGroupCfg(terms={'height': ObservationTermCfg(func=sensed_height)})},
         rewards={'height': RewardTermCfg(func=lambda env: sensed_height(env).sum(1), weight=1.)},
         events={'lift': EventTermCfg(func=lift_box, mode='step')},
