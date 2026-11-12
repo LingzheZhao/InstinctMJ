@@ -7,7 +7,7 @@ The entity set-up follows mjlab's tests/test_delayed_actuator.py (Apache-2.0, LI
 import mujoco
 import pytest
 import torch
-from mjlab.actuator import BuiltinPositionActuatorCfg, IdealPdActuatorCfg
+from mjlab.actuator import BuiltinPdActuatorCfg, BuiltinPositionActuatorCfg, IdealPdActuatorCfg
 from mjlab.entity import Entity, EntityArticulationInfoCfg, EntityCfg
 from mjlab.sim.sim import Simulation, SimulationCfg
 
@@ -66,7 +66,7 @@ class EntityScene:
         self.entity.write_data_to_sim(None if env_ids is None else env_ids.to(DEVICE))
 
 
-@pytest.mark.parametrize('actuator_cfg', [BuiltinPositionActuatorCfg, IdealPdActuatorCfg])
+@pytest.mark.parametrize('actuator_cfg', [BuiltinPositionActuatorCfg, BuiltinPdActuatorCfg, IdealPdActuatorCfg])
 def test_partial_reset_writes_only_reset_worlds_and_holds_their_pose(actuator_cfg):
     entity, sim = make_entity(actuator_cfg)
     env = CpuLifecycleEnv()
@@ -94,7 +94,39 @@ def test_partial_reset_writes_only_reset_worlds_and_holds_their_pose(actuator_cf
     torch.testing.assert_close(sim.data.ctrl[keep], ctrl, rtol=0, atol=0)
     torch.testing.assert_close(delay._current_lags[keep], lags, rtol=0, atol=0)
     torch.testing.assert_close(delay._step_count[keep], steps, rtol=0, atol=0)
-    # The reset world holds its post-reset pose: the builtin actuator writes the pose as its target,
-    # the ideal PD actuator writes kp * (pose - q) = 0.
-    expected = pose[0] if actuator_cfg is BuiltinPositionActuatorCfg else torch.zeros(2, device=DEVICE)
+    # The reset world holds its post-reset pose: the builtin actuators write the pose as their position target
+    # (the PD pair as [pos..., vel...] with a zero velocity target), the ideal PD actuator writes kp * (pose - q) = 0.
+    expected = {BuiltinPositionActuatorCfg: pose[0], IdealPdActuatorCfg: torch.zeros(2, device=DEVICE),
+                BuiltinPdActuatorCfg: torch.cat((pose[0], torch.zeros(2, device=DEVICE)))}[actuator_cfg]
     torch.testing.assert_close(sim.data.ctrl[0], expected)
+
+
+def make_g1_entity(asset):
+    from instinct_mj.assets.g1_assets import g1_asset
+    entity = Entity(g1_asset(asset).entity_cfg())
+    model = entity.compile()
+    sim = Simulation(num_envs=NUM_ENVS, cfg=SimulationCfg(), model=model, device=DEVICE)
+    entity.initialize(model, sim.model, sim.data, DEVICE)
+    return entity, sim
+
+
+@pytest.mark.parametrize('asset, elements', [('instinct_torso_popsicle', 2), ('mjlab_pelvis', 1)])
+def test_g1_partial_reset_writes_only_the_reset_world(asset, elements):
+    entity, sim = make_g1_entity(asset)
+    env = CpuLifecycleEnv()
+    env.scene = EntityScene(env, entity)
+    default = entity.data.default_joint_pos.clone()
+    assert sim.data.ctrl.shape[1] == elements * default.shape[1] == elements * 29
+    entity.write_joint_state_to_sim(default, torch.zeros_like(default))
+    for step in range(5):
+        entity.set_joint_position_target(default + step / 100.)
+        entity.write_data_to_sim()
+    keep = torch.tensor([1, 2], device=DEVICE)
+    ctrl = sim.data.ctrl[keep].clone()
+    delays = [actuator._delay_buffer for actuator in entity.actuators if actuator._delay_buffer is not None]
+    histories = [delay._buffer.buffer[keep].clone() for delay in delays]
+    env.reset(env_ids=torch.tensor([0]))
+    assert env.events.count(('write', [0])) == 1 and 'write' not in env.events
+    torch.testing.assert_close(sim.data.ctrl[keep], ctrl, rtol=0, atol=0)
+    for delay, history in zip(delays, histories):
+        torch.testing.assert_close(delay._buffer.buffer[keep], history, rtol=0, atol=0)
