@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 import torch
 import tqdm
 from mjlab.managers import SceneEntityCfg
-from mjlab.managers.event_manager import RecomputeLevel, requires_model_fields
+from mjlab.managers.event_manager import requires_model_fields
 from mjlab.utils.lab_api import math as math_utils
 
 from instinct_mj.motion_reference.motion_reference_hoi_data import HoiMotionReferenceData, HoiMotionReferenceState
@@ -22,7 +22,9 @@ if TYPE_CHECKING:
     from instinct_mj.motion_reference.motion_reference_manager import MotionReferenceManager
 
 
-@requires_model_fields("body_gravcomp", recompute=RecomputeLevel.set_const_fixed)
+# MuJoCo Warp reads body_gravcomp per world in the passive force of every step; no set_const constant derives from
+# it, so mjlab's event manager runs no recompute after this event.
+@requires_model_fields("body_gravcomp")
 def virtualize_articulation(
     env: ManagerBasedEnv,
     env_ids: torch.Tensor | None,
@@ -48,7 +50,8 @@ def virtualize_articulation(
 
     # MuJoCo does not provide the previous backend-style per-body gravity toggle.
     # gravcomp=1.0 compensates full gravity for the selected bodies.
-    env_grid, body_grid = torch.meshgrid(env_ids, body_ids, indexing="ij")
+    # mjlab's indexing holds body ids as int32; meshgrid needs one dtype.
+    env_grid, body_grid = torch.meshgrid(env_ids, body_ids.to(torch.long), indexing="ij")
     env.sim.model.body_gravcomp[env_grid, body_grid] = 1.0
 
 

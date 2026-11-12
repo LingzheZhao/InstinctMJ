@@ -6,7 +6,7 @@ import torch
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.envs.mdp import dr
 from mjlab.managers import EventTermCfg, ManagerTermBase, SceneEntityCfg
-from mjlab.managers.event_manager import RecomputeLevel, requires_model_fields
+from mjlab.managers.event_manager import requires_model_fields
 from mjlab.sensor import RayCastSensor as RayCaster
 from mjlab.utils.lab_api import math as math_utils
 
@@ -93,7 +93,7 @@ def _randomize_prop_by_op(
     return data_randomized
 
 
-@requires_model_fields("body_ipos", "body_iquat", recompute=RecomputeLevel.set_const)
+@requires_model_fields("body_ipos", "body_iquat")
 def randomize_rigid_body_com(
     env: ManagerBasedEnv,
     env_ids: torch.Tensor | None,

@@ -14,7 +14,7 @@ import torch
 from mjlab.entity import Entity
 from mjlab.envs.mdp import dr
 from mjlab.managers import SceneEntityCfg
-from mjlab.managers.event_manager import RecomputeLevel, requires_model_fields
+from mjlab.managers.event_manager import requires_model_fields
 from mjlab.utils.lab_api.math import sample_uniform
 
 from instinct_mj.envs.mdp.events.randomization import uniform_mass_scale_to_alpha
@@ -25,7 +25,6 @@ from instinct_mj.envs.mdp.events.randomization import uniform_mass_scale_to_alph
     "body_ipos",
     "body_inertia",
     "body_iquat",
-    recompute=RecomputeLevel.set_const,
 )
 def randomize_rigid_body_mass(
     env,

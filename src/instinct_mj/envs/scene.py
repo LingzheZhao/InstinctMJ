@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from mjlab.scene import Scene
+from mjlab.utils.spec import attach_unprefixed
 
 
 class InstinctScene(Scene):
@@ -22,4 +23,4 @@ class InstinctScene(Scene):
         self._terrain = terrain
         self.entities["terrain"] = terrain
         frame = self.spec.worldbody.add_frame()
-        self.spec.attach(terrain.spec, prefix="", frame=frame)
+        attach_unprefixed(self.spec, terrain.spec, frame)

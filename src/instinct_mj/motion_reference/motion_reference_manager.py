@@ -133,6 +133,19 @@ class MotionReferenceManager(Sensor):
         self._update_outdated_buffers()
         return self._data
 
+    def _invalidate_cache(self) -> None:
+        """Also drop the reference frames placed at the robot's root pose.
+
+        The scene calls this whenever the simulation data changes. Those frames read the robot's root, so a state
+        written at an unchanged reference time is seen at their next read. The reference rows themselves depend on
+        the reference time only and stay cached.
+        """
+        super()._invalidate_cache()
+        if self._is_initialized:
+            for buffer in (self._reference_relative_base_pos, self._reference_relative_delta_quat,
+                           self._reference_link_pos_relative_w, self._reference_link_quat_relative_w):
+                buffer.timestamp = -1.0
+
     @property
     def is_initialized(self) -> bool:
         return self._is_initialized

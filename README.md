@@ -24,7 +24,9 @@ uv sync
 ```
 
 - Python 3.10–3.13, Linux x86_64.
-- `mjlab 1.6.0` must be next to this directory as `../mjlab` (installed editable from that path).
+- `mjlab 1.6.0` must be next to this directory as `../mjlab` (installed editable from that path): the
+  [LingzheZhao/mjlab_research](https://github.com/LingzheZhao/mjlab_research) fork at
+  `ca28770313e0362675118f7ff179545a642a1b6d`, with MuJoCo and MuJoCo Warp 4.0.1.
 - `instinct_rl 1.0.2` is installed from the commit recorded in `uv.lock`.
 
 ## Data and weights
