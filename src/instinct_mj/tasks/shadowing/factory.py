@@ -51,6 +51,15 @@ def configure_shadowing_env_cfg(
     scale and the whole-robot ``subtree`` contact selectors of the chosen G1. A
     supplied robot, named or not, also replaces the play ghost ``robot_reference``
     with a contact-free copy of itself.
+
+    The motion source is taken as it is: its root rows (``base_pos_w``,
+    ``base_quat_w``) must be those of the chosen asset's root body, and its waist
+    values those of the chosen tree (the torso-rooted G1 reverses the waist
+    chain: its three waist joints turn the opposite way, and its waist roll
+    pivot sits 0.044 m from the pelvis-rooted one). Terms that read the free-joint body (base
+    velocities, the base position and gravity terminations, the reference
+    commands' base frame) follow the chosen root; selectors that name a body keep
+    that body.
     """
     if (motion_buffers is None) == (motion_folder is None):
         raise ValueError("Supply exactly one of native motion_buffers or motion_folder")
