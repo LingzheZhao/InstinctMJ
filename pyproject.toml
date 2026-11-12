@@ -27,11 +27,13 @@ dependencies = [
   "coacd",
   "shapely>=2.0",
   "warp-lang>=1.15.0",
-  "mujoco-warp~=4.0.0",
-  "mujoco~=4.0.0",
-  # The scoped post-reset write (Scene.write_data_to_sim(env_ids)) needs mjlab main at or after
-  # mujocolab/mjlab@936f7a12, whose version field is still 1.6.0; no mjlab release declares MuJoCo 4.0.
-  "mjlab>=1.6.0",
+  "mujoco-warp~=4.0.1",
+  "mujoco-core~=4.0.1",
+  # Built for one mjlab: LingzheZhao/mjlab_research at ca28770313e0362675118f7ff179545a642a1b6d (MuJoCo and
+  # MuJoCo Warp 4.0.1; its version field is still 1.6.0). It has the scoped post-reset write
+  # (Scene.write_data_to_sim(env_ids)), the event manager that derives the set_const groups from the declared model
+  # fields, and the simulation data listener; no mjlab release has them.
+  "mjlab==1.6.0",
   "instinct_rl",
 ]
 

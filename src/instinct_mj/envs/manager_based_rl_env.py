@@ -61,6 +61,8 @@ class InstinctRlEnv(ManagerBasedRlEnv):
             model=self.sim.model,
             data=self.sim.data,
         )
+        # As in mjlab's own constructor: every Simulation step, forward and reset drops the sensors' cached data.
+        self.sim.add_data_listener(self.scene.invalidate_sensor_caches)
         if self.scene.sensor_context is not None:
             self.sim.set_sensor_context(self.scene.sensor_context)
 
