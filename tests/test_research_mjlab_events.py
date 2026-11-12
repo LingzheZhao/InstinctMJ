@@ -116,21 +116,20 @@ def test_gravity_compensation_needs_no_recompute_and_holds_only_the_written_worl
     before = derived_constants(env)
     env.reset(env_ids=torch.tensor([0], device=DEVICE))
     bodies = env.scene['robot'].indexing.body_ids
-    gravcomp = env.sim.model.body_gravcomp
+    gravcomp = env.sim.model.body_gravcomp.clone()
     assert gravcomp.shape[0] == NUM_ENVS
     assert bool((gravcomp[0, bodies] == 1.).all()) and not bool(gravcomp[1:, bodies].any())
-    after = assert_equal_to_full_recompute(env)
-    for field in DERIVED:
-        torch.testing.assert_close(after[field], before[field], rtol=0, atol=0, msg=field)
-    # The next step's accelerations, with no recompute and after a full one: the compensated world floats,
-    # the others fall at g.
+    # The next step's accelerations with no recompute: the compensated world floats, the others fall at g.
     env.sim.forward()
     qacc = env.sim.data.qacc.clone()
-    env.sim.recompute_constants(SetConstGroup.ALL)
-    env.sim.forward()
-    torch.testing.assert_close(env.sim.data.qacc, qacc, rtol=1e-5, atol=1e-4)
     torch.testing.assert_close(qacc[0, :3], torch.zeros(3, device=DEVICE), rtol=0, atol=1e-5)
     gravity = float(env.sim.mj_model.opt.gravity[2])
     torch.testing.assert_close(qacc[1:, 2], torch.full((NUM_ENVS - 1,), gravity, device=DEVICE), rtol=1e-5,
                                atol=1e-5)
+    # A full recompute changes no derived constant and no acceleration.
+    after = assert_equal_to_full_recompute(env)
+    for field in DERIVED:
+        torch.testing.assert_close(after[field], before[field], rtol=0, atol=0, msg=field)
+    env.sim.forward()
+    torch.testing.assert_close(env.sim.data.qacc.clone(), qacc, rtol=1e-5, atol=1e-4)
     env.close()
