@@ -31,29 +31,100 @@ perceptive_shadowing_cfg.G1PerceptiveShadowingOneMotionEnvCfg()
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize('task', ['Instinct-Shadowing-WholeBody-Plane-G1-v0',
-                                 'Instinct-Perceptive-Shadowing-G1-v0'])
-def test_factory_injects_native_buffer_and_clock_without_io(task, tmp_path):
+SHADOWING_TASKS = ['Instinct-BeyondMimic-Plane-G1-v0', 'Instinct-Shadowing-WholeBody-Plane-G1-v0',
+                   'Instinct-Perceptive-Shadowing-G1-v0']
+G1_ASSET_NAMES = [None, 'instinct_torso_popsicle', 'mjlab_pelvis']
+
+
+def shadowing_cfg(task, tmp_path, *, play=False, **kwargs):
     import instinct_mj.tasks
+    from instinct_mj.motion_reference.motion_reference_cfg import MotionBufferCfg
+    from instinct_mj.tasks.shadowing.factory import make_shadowing_env_cfg
+    class StandInBuffer:
+        pass
+    if 'Perceptive' in task:
+        kwargs['terrain_metadata'] = str(tmp_path/'metadata.yaml')
+    return make_shadowing_env_cfg(task, play=play, motion_buffers={'current':MotionBufferCfg(class_type=StandInBuffer)},
+        num_envs=3, physics_dt=.005, decimation=4, reference_frame_interval_s=.02, **kwargs)
+
+
+@pytest.mark.parametrize('asset', G1_ASSET_NAMES)
+@pytest.mark.parametrize('task', SHADOWING_TASKS)
+def test_factory_injects_native_buffer_and_clock_without_io(task, asset, tmp_path):
+    import instinct_mj.tasks
+    from instinct_mj.assets.g1_assets import DEFAULT_G1_ASSET, g1_asset
     from instinct_mj.motion_reference.motion_reference_cfg import MotionBufferCfg
     from instinct_mj.tasks.shadowing.factory import make_shadowing_env_cfg
     class NativeBuffer:
         pass
     source = MotionBufferCfg(class_type=NativeBuffer)
-    kwargs = {} if 'WholeBody' in task else {'terrain_metadata':str(tmp_path/'metadata.yaml')}
+    kwargs = {} if 'Perceptive' not in task else {'terrain_metadata':str(tmp_path/'metadata.yaml')}
     cfg = make_shadowing_env_cfg(task, motion_buffers={'current':source}, num_envs=3,
-        physics_dt=.005, decimation=4, reference_frame_interval_s=.02, **kwargs)
+        physics_dt=.005, decimation=4, reference_frame_interval_s=.02, asset=asset, **kwargs)
     reference = next(sensor for sensor in cfg.scene.sensors if sensor.name == 'motion_reference')
     assert reference.motion_buffers['current'].class_type is NativeBuffer
     assert reference.motion_buffers['current'] is not source
     assert reference.mp_split_method == 'None'
     assert reference.update_period == .02 and reference.frame_interval_s == .02
-    assert cfg.scene.num_envs == 3 and cfg.curriculum['beyond_adaptive_sampling'] is None
+    assert cfg.scene.num_envs == 3 and cfg.curriculum.get('beyond_adaptive_sampling') is None
     assert cfg.events['bin_fail_counter_smoothing'] is None
     assert not (tmp_path/'metadata.yaml').exists()
+    selected = g1_asset(DEFAULT_G1_ASSET if asset is None else asset)
     import mujoco
     spec = mujoco.MjSpec.from_file(reference.robot_model_path)
-    assert list(spec.worldbody.bodies)[0].name == 'torso_link'
+    assert list(spec.worldbody.bodies)[0].name == selected.root_body
+    assert cfg.scene.entities['robot'].spec_fn is selected.spec_fn
+    assert cfg.actions['joint_pos'].scale == dict(selected.action_scale)
+    subtrees = [getattr(sensor, side).pattern for sensor in cfg.scene.sensors for side in ('primary', 'secondary')
+                if getattr(getattr(sensor, side, None), 'mode', None) == 'subtree']
+    assert all(pattern == selected.root_body for pattern in subtrees)
+    assert bool(subtrees) == ('WholeBody' in task)
+
+
+def test_a_named_asset_with_a_supplied_robot_is_an_argument_error(tmp_path):
+    from instinct_mj.assets.g1_assets import g1_asset
+    asset = g1_asset('mjlab_pelvis')
+    with pytest.raises(ValueError, match='either a named asset'):
+        shadowing_cfg(SHADOWING_TASKS[0], tmp_path, asset=asset.name, robot=asset.entity_cfg(),
+                      robot_model_path=asset.model_path)
+
+
+def plain(value):
+    """A configuration as nested plain values; functions and classes by their qualified names."""
+    import dataclasses
+    import functools
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return {'class': type(value).__qualname__,
+                **{field.name: plain(getattr(value, field.name)) for field in dataclasses.fields(value)}}
+    if isinstance(value, dict):
+        return {str(key): plain(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [plain(item) for item in value]
+    if isinstance(value, functools.partial):
+        return {'partial': plain(value.func), 'args': plain(value.args), 'keywords': plain(value.keywords)}
+    if isinstance(value, type) or callable(value):
+        return f'{getattr(value, "__module__", "")}.{getattr(value, "__qualname__", type(value).__qualname__)}'
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, torch.Tensor):
+        return value.tolist()
+    if hasattr(value, '__dict__'):
+        return {'class': type(value).__qualname__, **plain(vars(value))}
+    return value
+
+
+@pytest.mark.parametrize('play', [False, True])
+@pytest.mark.parametrize('task', SHADOWING_TASKS)
+def test_naming_the_default_asset_builds_the_configuration_of_no_asset(task, play, tmp_path):
+    unnamed = plain(shadowing_cfg(task, tmp_path, play=play))
+    named = plain(shadowing_cfg(task, tmp_path, play=play, asset='instinct_torso_popsicle'))
+    if play and 'BeyondMimic' not in task:
+        # These play configurations keep their own colliding ghost; a named asset's ghost is contact-free.
+        assert named['scene']['entities']['robot_reference']['collisions'] != \
+            unnamed['scene']['entities']['robot_reference']['collisions']
+        named['scene']['entities'].pop('robot_reference')
+        unnamed['scene']['entities'].pop('robot_reference')
+    assert named == unnamed
 
 
 class CachedEnv:
